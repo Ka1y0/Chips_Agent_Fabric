@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chips-agent-fabric.invalid/schemas/bridge-derived-artifact-v1.schema.json",
+  "title": "CHIPS Agent Fabric Derived Bridge Artifact v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifactID",
+    "sourceArtifactID",
+    "content",
+    "envelopeSha256",
+    "codecID",
+    "authoritative",
+    "canonical",
+    "stateUse"
+  ],
+  "properties": {
+    "artifactID": {"type": "string", "minLength": 1},
+    "sourceArtifactID": {"type": "string", "minLength": 1},
+    "content": {"type": ["object", "array", "string", "number", "boolean", "null"]},
+    "envelopeSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "codecID": {"type": "string", "minLength": 1},
+    "authoritative": {"const": false},
+    "canonical": {"const": false},
+    "stateUse": {"const": "derivedOnly"}
+  }
+}

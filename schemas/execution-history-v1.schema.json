@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chips-agent-fabric.invalid/schemas/execution-history-v1.schema.json",
+  "title": "CHIPS Agent Fabric Execution History v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "taskID", "taskType", "workerID", "provider", "model", "nodeID", "topology", "latencySeconds", "succeeded", "failureClass", "retryCount", "inputTokens", "outputTokens", "costUSD", "reviewOutcome", "humanAccepted", "recordedAt"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "taskID": {"type": "string", "minLength": 1},
+    "taskType": {"type": "string", "minLength": 1},
+    "workerID": {"type": "string", "minLength": 1},
+    "provider": {"type": "string", "minLength": 1},
+    "model": {"type": "string", "minLength": 1},
+    "nodeID": {"type": "string", "minLength": 1},
+    "topology": {"enum": ["single", "primaryReviewer", "parallelPanel", "cheapFirstEscalation", "fallback"]},
+    "latencySeconds": {"type": "number", "minimum": 0},
+    "succeeded": {"type": "boolean"},
+    "failureClass": {"type": ["string", "null"]},
+    "retryCount": {"type": "integer", "minimum": 0},
+    "inputTokens": {"type": ["integer", "null"], "minimum": 0},
+    "outputTokens": {"type": ["integer", "null"], "minimum": 0},
+    "costUSD": {"type": ["number", "null"], "minimum": 0},
+    "reviewOutcome": {"type": ["string", "null"]},
+    "humanAccepted": {"type": ["boolean", "null"]},
+    "recordedAt": {"type": "string", "format": "date-time"}
+  }
+}

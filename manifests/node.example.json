@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "node-example",
+  "hostname": "replace-after-verification",
+  "displayName": "Example node",
+  "role": "worker",
+  "privateEndpoint": null,
+  "capabilities": [],
+  "registrationState": "unprovisioned",
+  "containsCredentials": false
+}

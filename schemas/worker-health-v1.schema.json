@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chips-agent-fabric.invalid/schemas/worker-health-v1.schema.json",
+  "title": "CHIPS Agent Fabric Worker Health v1",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "telemetry": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "value", "confidence"],
+          "properties": {
+            "state": {"const": "known"},
+            "value": {"type": "number"},
+            "confidence": {"enum": ["exact", "verified", "providerReported", "inferred", "unknown"]}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "reason", "confidence"],
+          "properties": {
+            "state": {"const": "unavailable"},
+            "reason": {"enum": ["notReported", "notSupported", "permissionDenied", "stale", "offline", "unknown"]},
+            "confidence": {"enum": ["exact", "verified", "providerReported", "inferred", "unknown"]}
+          }
+        }
+      ]
+    }
+  },
+  "required": ["availability", "checkedAt", "latencyMs", "detail"],
+  "properties": {
+    "availability": {"enum": ["available", "busy", "degraded", "offline", "unknown"]},
+    "checkedAt": {"type": "string", "format": "date-time"},
+    "latencyMs": {"$ref": "#/$defs/telemetry"},
+    "detail": {"type": ["string", "null"]}
+  }
+}

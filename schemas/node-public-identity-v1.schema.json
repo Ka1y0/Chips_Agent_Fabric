@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chips-agent-fabric.invalid/schemas/node-public-identity-v1.schema.json",
+  "title": "CHIPS Agent Fabric Node Public Identity v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["nodeID", "keyID", "algorithm", "publicKeyFingerprint", "createdAt", "rotatedFromKeyID"],
+  "properties": {
+    "nodeID": {"type": "string", "minLength": 1},
+    "keyID": {"type": "string", "minLength": 1},
+    "algorithm": {"type": "string", "minLength": 1},
+    "publicKeyFingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "rotatedFromKeyID": {"type": ["string", "null"]}
+  }
+}

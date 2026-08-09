@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chips-agent-fabric.invalid/schemas/transport-status-v1.schema.json",
+  "title": "CHIPS Agent Fabric Transport Status v1",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "telemetry": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "value", "confidence"],
+          "properties": {
+            "state": {"const": "known"},
+            "value": {"type": "number"},
+            "confidence": {"enum": ["exact", "verified", "providerReported", "inferred", "unknown"]}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "reason", "confidence"],
+          "properties": {
+            "state": {"const": "unavailable"},
+            "reason": {"enum": ["notReported", "notSupported", "permissionDenied", "stale", "offline", "unknown"]},
+            "confidence": {"enum": ["exact", "verified", "providerReported", "inferred", "unknown"]}
+          }
+        }
+      ]
+    }
+  },
+  "required": ["transportID", "provider", "authenticated", "encrypted", "peerIdentity", "reachable", "latencyMs", "health", "observedAt"],
+  "properties": {
+    "transportID": {"type": "string", "minLength": 1},
+    "provider": {"type": "string", "minLength": 1},
+    "authenticated": {"type": "boolean"},
+    "encrypted": {"type": "boolean"},
+    "peerIdentity": {"type": ["string", "null"]},
+    "reachable": {"type": "boolean"},
+    "latencyMs": {"$ref": "#/$defs/telemetry"},
+    "health": {"enum": ["healthy", "degraded", "unreachable", "unknown"]},
+    "observedAt": {"type": "string", "format": "date-time"}
+  }
+}

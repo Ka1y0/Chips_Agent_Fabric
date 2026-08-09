@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chips-agent-fabric.invalid/schemas/bridge-telemetry-v1.schema.json",
+  "title": "CHIPS Agent Fabric Privacy-Safe Bridge Telemetry v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "exchangeID",
+    "senderID",
+    "receiverID",
+    "bridgeAvailable",
+    "latencyMs",
+    "protocolVersion",
+    "codecID",
+    "sourceArtifactSha256",
+    "envelopeSha256",
+    "originalBytes",
+    "encodedBytes",
+    "fallbackReason"
+  ],
+  "properties": {
+    "exchangeID": {"type": "string", "minLength": 1},
+    "senderID": {"type": "string", "minLength": 1},
+    "receiverID": {"type": "string", "minLength": 1},
+    "bridgeAvailable": {"type": "boolean"},
+    "latencyMs": {"type": "integer", "minimum": 0},
+    "protocolVersion": {"type": ["string", "null"]},
+    "codecID": {"type": ["string", "null"]},
+    "sourceArtifactSha256": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "envelopeSha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
+    "originalBytes": {"type": "integer", "minimum": 0},
+    "encodedBytes": {"type": "integer", "minimum": 0},
+    "fallbackReason": {
+      "type": ["string", "null"],
+      "enum": [
+        null,
+        "disabled",
+        "forbiddenAuthority",
+        "unsupported",
+        "versionMismatch",
+        "codecMismatch",
+        "validationFailed",
+        "payloadLimit",
+        "hashMismatch",
+        "decodeFailed",
+        "timeout"
+      ]
+    }
+  }
+}

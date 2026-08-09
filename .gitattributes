@@ -1,0 +1,20 @@
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+
+# Private V0 evidence is retained locally but is never part of a source export.
+artifacts/goal-run export-ignore
+artifacts/goal-run/** export-ignore
+artifacts/open-source-v0.1 export-ignore
+artifacts/open-source-v0.1/** export-ignore
+docs/CLAUDE_GOAL_HANDOFF.md export-ignore
+.agents export-ignore
+.agents/** export-ignore
+.codex export-ignore
+.codex/** export-ignore
+scripts/run_local_worker_acceptance.py export-ignore
+scripts/run_real_acceptance.py export-ignore
+scripts/run_remote_worker_gates.py export-ignore

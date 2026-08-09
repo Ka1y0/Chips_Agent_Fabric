@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chips-agent-fabric.invalid/schemas/bridge-envelope-v1.schema.json",
+  "title": "CHIPS Agent Fabric Bridge Envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "bridgeVersion",
+    "codecID",
+    "messageID",
+    "senderID",
+    "receiverID",
+    "taskID",
+    "payload",
+    "envelopeSha256"
+  ],
+  "properties": {
+    "bridgeVersion": {"const": "fabric-bridge/1.0"},
+    "codecID": {"type": "string", "minLength": 1},
+    "messageID": {"type": "string", "minLength": 1},
+    "senderID": {"type": "string", "minLength": 1},
+    "receiverID": {"type": "string", "minLength": 1},
+    "taskID": {"type": "string", "minLength": 1},
+    "payload": {"$ref": "#/$defs/structuredArtifact"},
+    "envelopeSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  },
+  "$defs": {
+    "structuredArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifactID", "artifactType", "content"],
+      "properties": {
+        "artifactID": {"type": "string", "minLength": 1},
+        "artifactType": {"type": "string", "minLength": 1},
+        "content": {
+          "type": ["object", "array", "string", "number", "boolean", "null"]
+        }
+      }
+    }
+  }
+}

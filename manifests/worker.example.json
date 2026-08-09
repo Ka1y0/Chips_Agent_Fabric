@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "worker-example",
+  "nodeID": "node-example",
+  "harness": "mock",
+  "provider": "mock",
+  "model": null,
+  "capabilities": ["review"],
+  "codeWriteAllowed": false,
+  "privacyAllowed": false,
+  "registrationState": "unprovisioned",
+  "containsCredentials": false
+}
