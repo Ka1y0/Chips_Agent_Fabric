@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
+import signal
 import sqlite3
 import sys
 from collections.abc import Sequence
@@ -175,6 +177,7 @@ def _task_create(args: argparse.Namespace) -> int:
         scheduler=DeterministicScheduler(),
         adapters=AdapterRegistry(),
         evidence_root=config.data_dir / "evidence",
+        worker_timeout_seconds=config.worker_timeout_seconds,
     )
     requirements = TaskRequirements(
         labels=frozenset(TaskLabel(value) for value in args.label),
@@ -191,8 +194,6 @@ def _task_create(args: argparse.Namespace) -> int:
         panel_size=args.panel_size,
         preferred_workers=tuple(args.preferred_worker),
     )
-    import asyncio
-
     task_id = asyncio.run(
         runtime.submit_task(
             project_id=args.project,
@@ -209,6 +210,276 @@ def _task_create(args: argparse.Namespace) -> int:
     return 0
 
 
+def _goal_service(args: argparse.Namespace):
+    from .autonomy import GoalService
+
+    config = _load(args)
+    return GoalService(StateStore(config.database_path))
+
+
+def _goal_create(args: argparse.Namespace) -> int:
+    from .autonomy import GoalBudget
+
+    budgets = GoalBudget(
+        max_iterations=args.max_iterations,
+        max_tasks=args.max_tasks,
+        max_failures=args.max_failures,
+        no_progress_limit=args.no_progress_limit,
+        max_elapsed_seconds=args.max_elapsed_seconds,
+        max_total_tokens=args.max_total_tokens,
+        max_cost_usd=args.max_cost_usd,
+    )
+    row = _goal_service(args).create_goal(
+        project_id=args.project,
+        intent=args.intent,
+        budgets=budgets,
+        goal_id=args.id,
+        actor="human:cli",
+    )
+    _emit(row, as_json=args.json)
+    return 0
+
+
+def _goal_list(args: argparse.Namespace) -> int:
+    rows = _goal_service(args).list_goals(project_id=args.project)
+    if args.state:
+        rows = [row for row in rows if row["state"] == args.state]
+    if args.limit is not None:
+        rows = rows[: args.limit]
+    if args.json:
+        _emit(rows, as_json=True)
+    elif not rows:
+        print("No goals.")
+    else:
+        print("ID\tSTATE\tITERATION\tTASKS\tUPDATED\tINTENT")
+        for row in rows:
+            print(
+                f"{row['id']}\t{row['state']}\t{row['iteration_count']}\t"
+                f"{row['task_count']}\t{row['updated_at']}\t{row['intent']}"
+            )
+    return 0
+
+
+def _goal_get(args: argparse.Namespace) -> int:
+    _emit(_goal_service(args).get_goal(args.goal_id), as_json=args.json)
+    return 0
+
+
+def _goal_pause(args: argparse.Namespace) -> int:
+    row = _goal_service(args).pause(
+        args.goal_id,
+        args.mode,
+        reason=args.reason,
+        actor="human:cli",
+    )
+    _emit(row, as_json=args.json)
+    return 0
+
+
+def _goal_resume(args: argparse.Namespace) -> int:
+    row = _goal_service(args).resume(
+        args.goal_id,
+        reason=args.reason,
+        actor="human:cli",
+    )
+    _emit(row, as_json=args.json)
+    return 0
+
+
+def _goal_steer(args: argparse.Namespace) -> int:
+    row = _goal_service(args).steer(
+        args.goal_id,
+        args.instruction,
+        priority=args.priority,
+        preserve_valid_work=not args.do_not_preserve_valid_work,
+        actor="human:cli",
+    )
+    _emit(row, as_json=args.json)
+    return 0
+
+
+def _goal_stop(args: argparse.Namespace) -> int:
+    row = _goal_service(args).stop(
+        args.goal_id,
+        reason=args.reason,
+        actor="human:cli",
+    )
+    _emit(row, as_json=args.json)
+    return 0
+
+
+def _telemetry(args: argparse.Namespace) -> int:
+    from .telemetry import InvocationTelemetryRepository
+
+    config = _load(args)
+    repository = InvocationTelemetryRepository(StateStore(config.database_path))
+    records = repository.list(goal_id=args.goal, task_id=args.task, limit=args.limit)
+    result = {
+        "aggregate": repository.aggregate(goal_id=args.goal, task_id=args.task).to_protocol(),
+        "invocations": [record.to_protocol() for record in records],
+    }
+    _emit(result, as_json=args.json)
+    return 0
+
+
+def _key_value_pairs(values: Sequence[str], *, option: str) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for item in values:
+        key, separator, value = item.partition("=")
+        if not separator or not key.strip() or not value.strip():
+            raise ValueError(f"{option} requires KEY=VALUE")
+        key = key.strip()
+        if key in result:
+            raise ValueError(f"duplicate {option} key: {key}")
+        result[key] = value.strip()
+    return result
+
+
+def _parse_datetime(value: str | None, *, option: str) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError(f"{option} must be an RFC 3339 timestamp") from error
+    if parsed.tzinfo is None:
+        raise ValueError(f"{option} must include a timezone")
+    return parsed.astimezone(UTC)
+
+
+def _resources(args: argparse.Namespace) -> int:
+    from .resource_usage import ResourceUsageRepository
+
+    config = _load(args)
+    repository = ResourceUsageRepository(StateStore(config.database_path))
+    filters = {
+        "goal_id": args.goal,
+        "task_id": args.task,
+        "provider": args.provider,
+        "model": args.model,
+        "worker_id": args.worker,
+        "account_scope": args.account_scope,
+        "quota_pool_id": args.quota_pool,
+        "observed_after": _parse_datetime(args.observed_after, option="--observed-after"),
+        "observed_before": _parse_datetime(args.observed_before, option="--observed-before"),
+    }
+    snapshots = repository.list_snapshots(**filters, limit=args.limit)
+    result = {
+        "aggregate": repository.aggregate(**filters).to_protocol(),
+        "snapshots": [snapshot.to_protocol() for snapshot in snapshots],
+    }
+    _emit(result, as_json=args.json)
+    return 0
+
+
+def _autonomous_status(args: argparse.Namespace) -> int:
+    from .autonomous_host import AutonomousHostRepository
+
+    config = _load(args)
+    repository = AutonomousHostRepository(StateStore(config.database_path))
+    hosts = [repository.get_host(args.host)] if args.host else repository.list_hosts()
+    if args.goal:
+        lease = repository.get_goal_lease(args.goal)
+        leases = [lease] if lease is not None else []
+    else:
+        leases = repository.list_goal_leases(host_id=args.host)
+    _emit({"hosts": hosts, "goalLeases": leases}, as_json=args.json)
+    return 0
+
+
+def _local_worker_tokens(endpoints: dict[str, str]) -> dict[str, str]:
+    """Resolve Worker bearer credentials in memory without CLI token arguments."""
+
+    from .credentials import local_worker_token
+
+    return {worker_id: local_worker_token(account=worker_id) for worker_id in endpoints}
+
+
+def _build_autonomous_host(args: argparse.Namespace):
+    from .autonomous_host import AutonomousHost, AutonomousHostConfig
+    from .autonomy import AutonomousIterationEngine, SupervisorRuntimeDispatcher
+    from .autonomy_driver import ProductionAutonomyDriver, reconstruct_adapter_registry
+
+    config = _load(args)
+    store = StateStore(config.database_path)
+    overrides = _key_value_pairs(args.executable_override, option="--executable-override")
+    endpoints = _key_value_pairs(args.local_worker_endpoint, option="--local-worker-endpoint")
+    drivers = _key_value_pairs(args.local_worker_driver, option="--local-worker-driver")
+    adapters = reconstruct_adapter_registry(
+        store,
+        executable_overrides=overrides,
+        local_worker_endpoints=endpoints,
+        local_worker_tokens=_local_worker_tokens(endpoints),
+        local_worker_drivers=drivers,
+        allow_mock=args.allow_mock_worker,
+    )
+    runtime = SupervisorRuntime(
+        store=store,
+        scheduler=DeterministicScheduler(),
+        adapters=adapters,
+        evidence_root=config.data_dir / "evidence",
+        worker_timeout_seconds=config.worker_timeout_seconds,
+    )
+    driver = ProductionAutonomyDriver(runtime)
+    dispatcher = SupervisorRuntimeDispatcher(runtime)
+
+    def engine_factory(_goal_id: str) -> AutonomousIterationEngine:
+        return AutonomousIterationEngine(
+            store=store,
+            evaluator=driver,
+            planner=driver,
+            dispatcher=dispatcher,
+            verifier=driver,
+        )
+
+    return (
+        AutonomousHost(
+            store=store,
+            engine_factory=engine_factory,
+            config=AutonomousHostConfig(
+                max_concurrent_goals=args.max_concurrent_goals,
+                poll_interval_seconds=args.poll_interval_seconds,
+                heartbeat_interval_seconds=args.heartbeat_interval_seconds,
+                lease_ttl_seconds=args.lease_ttl_seconds,
+                shutdown_grace_seconds=args.shutdown_grace_seconds,
+            ),
+            host_id=args.host_id,
+        ),
+        runtime,
+    )
+
+
+async def _operate_autonomous_host(args: argparse.Namespace) -> dict[str, Any] | None:
+    host, runtime = _build_autonomous_host(args)
+    # Compensating recovery closes a crash window between a terminal Task transition and its
+    # logical POST_TASK_USAGE_AUDIT. Audit keys are versioned and idempotent.
+    await runtime.audit_pending_terminal_tasks()
+    loop = asyncio.get_running_loop()
+    installed: list[signal.Signals] = []
+    for value in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(value, host.request_shutdown)
+            installed.append(value)
+        except (NotImplementedError, RuntimeError):
+            # Windows event loops may not support signal handlers. KeyboardInterrupt remains safe.
+            pass
+    try:
+        if args.autonomous_command == "run":
+            return await host.run_goal(args.goal_id)
+        await host.serve()
+        return None
+    finally:
+        for value in installed:
+            loop.remove_signal_handler(value)
+
+
+def _autonomous_operate(args: argparse.Namespace) -> int:
+    result = asyncio.run(_operate_autonomous_host(args))
+    if result is not None:
+        _emit(result, as_json=args.json)
+    return 0
+
+
 def _serve(args: argparse.Namespace) -> int:
     config = _load(args)
     from uvicorn import run
@@ -221,6 +492,7 @@ def _serve(args: argparse.Namespace) -> int:
         APISettings(
             bind_host=config.host,
             allow_unauthenticated_loopback=allow_loopback,
+            allow_goal_mutations=not config.read_only_api,
         ),
     )
     run(
@@ -318,7 +590,145 @@ def build_parser() -> argparse.ArgumentParser:
     task_create.add_argument("--priority", type=int, default=50)
     task_create.set_defaults(handler=_task_create)
 
-    serve = subcommands.add_parser("serve", help="serve the read-only REST/WebSocket API")
+    goal = subcommands.add_parser("goal", help="manage durable autonomous Goals")
+    goal_commands = goal.add_subparsers(dest="goal_command", required=True)
+
+    goal_create = goal_commands.add_parser("create", help="create a guarded autonomous Goal")
+    goal_create.add_argument("--project", required=True)
+    goal_create.add_argument("--intent", required=True)
+    goal_create.add_argument("--id")
+    goal_create.add_argument("--max-iterations", type=int, default=12)
+    goal_create.add_argument("--max-tasks", type=int, default=48)
+    goal_create.add_argument("--max-failures", type=int, default=6)
+    goal_create.add_argument("--no-progress-limit", type=int, default=3)
+    goal_create.add_argument("--max-elapsed-seconds", type=float)
+    goal_create.add_argument("--max-total-tokens", type=int)
+    goal_create.add_argument("--max-cost-usd", type=float)
+    goal_create.set_defaults(handler=_goal_create)
+
+    goal_list = goal_commands.add_parser("list", help="list durable autonomous Goals")
+    goal_list.add_argument("--project")
+    goal_list.add_argument("--state")
+    goal_list.add_argument("--limit", type=int)
+    goal_list.set_defaults(handler=_goal_list)
+
+    goal_get = goal_commands.add_parser("get", help="show one durable Goal")
+    goal_get.add_argument("goal_id")
+    goal_get.set_defaults(handler=_goal_get)
+
+    goal_pause = goal_commands.add_parser("pause", help="soft- or hard-pause a Goal")
+    goal_pause.add_argument("goal_id")
+    goal_pause.add_argument("--mode", choices=("soft", "hard"), required=True)
+    goal_pause.add_argument("--reason")
+    goal_pause.set_defaults(handler=_goal_pause)
+
+    goal_resume = goal_commands.add_parser("resume", help="resume a paused Goal")
+    goal_resume.add_argument("goal_id")
+    goal_resume.add_argument("--reason")
+    goal_resume.set_defaults(handler=_goal_resume)
+
+    goal_steer = goal_commands.add_parser("steer", help="inject durable Goal guidance")
+    goal_steer.add_argument("goal_id")
+    goal_steer.add_argument("--instruction", required=True)
+    goal_steer.add_argument("--priority", type=int)
+    goal_steer.add_argument(
+        "--do-not-preserve-valid-work",
+        action="store_true",
+        help="allow the engine to invalidate otherwise reusable work when justified",
+    )
+    goal_steer.set_defaults(handler=_goal_steer)
+
+    goal_stop = goal_commands.add_parser("stop", help="durably stop a Goal")
+    goal_stop.add_argument("goal_id")
+    goal_stop.add_argument("--reason", required=True)
+    goal_stop.set_defaults(handler=_goal_stop)
+
+    telemetry = subcommands.add_parser(
+        "telemetry", help="show normalized Worker invocation telemetry"
+    )
+    telemetry.add_argument("--goal", help="filter by autonomous Goal ID")
+    telemetry.add_argument("--task", help="filter by task ID")
+    telemetry.add_argument("--limit", type=int, default=1000)
+    telemetry.set_defaults(handler=_telemetry)
+
+    resources = subcommands.add_parser(
+        "resources", help="show normalized subscription/quota resource snapshots"
+    )
+    resources.add_argument("--goal", help="filter by autonomous Goal ID")
+    resources.add_argument("--task", help="filter by Task ID")
+    resources.add_argument("--provider")
+    resources.add_argument("--model")
+    resources.add_argument("--worker")
+    resources.add_argument("--account-scope")
+    resources.add_argument("--quota-pool")
+    resources.add_argument("--observed-after", help="inclusive RFC 3339 lower bound")
+    resources.add_argument("--observed-before", help="inclusive RFC 3339 upper bound")
+    resources.add_argument("--limit", type=int, default=1000)
+    resources.set_defaults(handler=_resources)
+
+    autonomous = subcommands.add_parser(
+        "autonomous", help="run and observe the production Autonomous Iteration host"
+    )
+    autonomous_commands = autonomous.add_subparsers(dest="autonomous_command", required=True)
+
+    def add_host_options(command: argparse.ArgumentParser) -> None:
+        command.add_argument("--host-id", help="stable operator-selected host identity")
+        command.add_argument("--max-concurrent-goals", type=int, default=2)
+        command.add_argument("--poll-interval-seconds", type=float, default=1.0)
+        command.add_argument("--heartbeat-interval-seconds", type=float, default=2.0)
+        command.add_argument("--lease-ttl-seconds", type=float, default=10.0)
+        command.add_argument("--shutdown-grace-seconds", type=float, default=10.0)
+        command.add_argument(
+            "--executable-override",
+            action="append",
+            default=[],
+            metavar="WORKER_OR_HARNESS=PATH",
+            help="explicit native Worker executable; repeatable",
+        )
+        command.add_argument(
+            "--local-worker-endpoint",
+            action="append",
+            default=[],
+            metavar="WORKER_ID=URL",
+            help="explicit Local Worker endpoint; bearer stays in approved secret storage",
+        )
+        command.add_argument(
+            "--local-worker-driver",
+            action="append",
+            default=[],
+            metavar="WORKER_ID=DRIVER_ID",
+            help="operator-selected server-side Local Worker driver profile; repeatable",
+        )
+        command.add_argument(
+            "--allow-mock-worker",
+            action="store_true",
+            help="explicit test-only opt-in for persisted Mock Workers",
+        )
+
+    autonomous_run = autonomous_commands.add_parser(
+        "run", help="advance one Goal until it suspends or terminates"
+    )
+    autonomous_run.add_argument("goal_id")
+    add_host_options(autonomous_run)
+    autonomous_run.set_defaults(handler=_autonomous_operate)
+
+    autonomous_serve = autonomous_commands.add_parser(
+        "serve", help="continuously advance eligible Goals with bounded concurrency"
+    )
+    add_host_options(autonomous_serve)
+    autonomous_serve.set_defaults(handler=_autonomous_operate)
+
+    autonomous_status = autonomous_commands.add_parser(
+        "status", help="show persisted production host and Goal lease state"
+    )
+    autonomous_status.add_argument("--host", help="filter by host ID")
+    autonomous_status.add_argument("--goal", help="filter by Goal ID")
+    autonomous_status.set_defaults(handler=_autonomous_status)
+
+    serve = subcommands.add_parser(
+        "serve",
+        help="serve REST/WebSocket; Goal controls require explicit config and scoped auth",
+    )
     serve.add_argument(
         "--allow-unauthenticated-loopback",
         action="store_true",
@@ -348,8 +758,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--minimum-context-tokens must be positive")
     if getattr(args, "panel_size", 1) <= 0:
         parser.error("--panel-size must be positive")
-    if not 0 <= getattr(args, "priority", 50) <= 100:
+    if getattr(args, "max_concurrent_goals", 1) <= 0:
+        parser.error("--max-concurrent-goals must be positive")
+    for name in (
+        "poll_interval_seconds",
+        "heartbeat_interval_seconds",
+        "lease_ttl_seconds",
+        "shutdown_grace_seconds",
+    ):
+        value = getattr(args, name, None)
+        if value is not None and value <= 0:
+            parser.error(f"--{name.replace('_', '-')} must be positive")
+    priority = getattr(args, "priority", None)
+    if priority is not None and not 0 <= priority <= 100:
         parser.error("--priority must be between 0 and 100")
+    for name in (
+        "max_iterations",
+        "max_tasks",
+        "max_failures",
+        "no_progress_limit",
+        "max_elapsed_seconds",
+        "max_total_tokens",
+        "max_cost_usd",
+    ):
+        value = getattr(args, name, None)
+        if value is not None and value <= 0:
+            parser.error(f"--{name.replace('_', '-')} must be positive")
     try:
         return int(args.handler(args))
     except (
@@ -357,6 +791,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         FileExistsError,
         FileNotFoundError,
         KeyError,
+        RuntimeError,
+        ValueError,
         sqlite3.Error,
     ) as error:
         print(f"error: {error}", file=sys.stderr)

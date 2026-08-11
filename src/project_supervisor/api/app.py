@@ -2,16 +2,31 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
+from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
+from project_supervisor.domain import RunState
 from project_supervisor.store import StateStore
 
 from .projections import SEVERITY_RANK, SupervisorProjection
-from .schemas import APIError, EventsFrame, KeepaliveFrame, SnapshotFrame, envelope
+from .schemas import (
+    APIError,
+    EventsFrame,
+    GoalCreateRequest,
+    GoalPauseRequest,
+    GoalResumeRequest,
+    GoalSteerRequest,
+    GoalStopRequest,
+    KeepaliveFrame,
+    SnapshotFrame,
+    envelope,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +34,8 @@ class APISettings:
     bind_host: str = "127.0.0.1"
     allow_unauthenticated_loopback: bool = False
     required_scope: str = "observe:read"
+    goal_control_scope: str = "goal:control"
+    allow_goal_mutations: bool = False
     keepalive_seconds: float = 15.0
     poll_interval_seconds: float = 0.25
     stream_batch_size: int = 200
@@ -62,10 +79,11 @@ def create_app(
     store: StateStore,
     settings: APISettings | None = None,
     *,
+    goal_service: Any | None = None,
     allow_unauthenticated_loopback: bool | None = None,
     bind_host: str | None = None,
 ) -> FastAPI:
-    """Create the read-only Cyber Office API.
+    """Create the Cyber Office observation API and optional authenticated Goal controls.
 
     The keyword overrides keep local test/dev setup concise while APISettings remains the single
     explicit production configuration surface.
@@ -82,11 +100,16 @@ def create_app(
         )
     elif allow_unauthenticated_loopback is not None or bind_host is not None:
         raise ValueError("pass APISettings or keyword overrides, not both")
-    projection = SupervisorProjection(store)
-    app = FastAPI(title="CHIPS Agent Fabric Supervisor API", version="0.1.0a1")
+    if goal_service is None:
+        from project_supervisor.autonomy import GoalService
+
+        goal_service = GoalService(store)
+    projection = SupervisorProjection(store, goal_reader=goal_service)
+    app = FastAPI(title="Project_Supervisor API", version="0.2.1")
     app.state.store = store
     app.state.api_settings = settings
     app.state.projection = projection
+    app.state.goal_service = goal_service
 
     def loopback_dev_allowed(peer_host: str | None) -> bool:
         return (
@@ -104,13 +127,41 @@ def create_app(
         if not store.verify_api_token(token, settings.required_scope):
             raise HTTPException(status_code=403, detail="token invalid or insufficient scope")
 
+    async def authorize_goal_control(request: Request) -> None:
+        # The explicit unauthenticated-loopback development override applies to observation only.
+        # Goal mutation always requires a scoped bearer, even from loopback.
+        token = _bearer(request.headers)
+        if token is None:
+            raise HTTPException(status_code=401, detail="bearer token required for Goal control")
+        if not store.verify_api_token(token, settings.goal_control_scope):
+            raise HTTPException(status_code=403, detail="token lacks Goal control scope")
+        if not settings.allow_goal_mutations:
+            raise HTTPException(status_code=403, detail="Goal mutations are disabled")
+
     @app.exception_handler(HTTPException)
     async def http_error(_request: Request, error: HTTPException) -> JSONResponse:
         code = {
             401: "token_required",
             403: "insufficient_scope",
-            404: "task_not_found",
+            404: "not_found",
+            409: "goal_control_conflict",
         }.get(error.status_code, "invalid_request")
+        if error.status_code == 404:
+            detail = str(error.detail).lower()
+            if detail.startswith("unknown goal:"):
+                code = "goal_not_found"
+            elif detail.startswith("unknown project:"):
+                code = "project_not_found"
+            elif detail.startswith("unknown run:"):
+                code = "run_not_found"
+            elif detail.startswith("unknown escalation:"):
+                code = "escalation_not_found"
+            elif detail.startswith("unknown task:"):
+                code = "task_not_found"
+            else:
+                code = "not_found"
+        elif error.status_code == 403 and "disabled" in str(error.detail).lower():
+            code = "goal_mutations_disabled"
         body = APIError(code=code, message=str(error.detail)).model_dump(
             by_alias=True, exclude_none=True
         )
@@ -120,7 +171,13 @@ def create_app(
     async def health() -> dict:
         """Credential-free liveness only; no node, worker, or project details."""
 
-        return envelope({"status": "ok", "apiVersion": "v1", "readOnly": True})
+        return envelope(
+            {
+                "status": "ok",
+                "apiVersion": "v1",
+                "readOnly": not settings.allow_goal_mutations,
+            }
+        )
 
     @app.get("/v1/capabilities", dependencies=[Depends(authorize)])
     async def capabilities() -> dict:
@@ -131,11 +188,39 @@ def create_app(
                     "webSocket": True,
                     "resumeCursor": "eventSequence",
                 },
-                "resources": ["status", "nodes", "workers", "tasks", "events"],
-                "mutations": [],
+                "resources": [
+                    "status",
+                    "nodes",
+                    "workers",
+                    "runs",
+                    "executionEscalations",
+                    "tasks",
+                    "goals",
+                    "telemetry",
+                    "autonomousHosts",
+                    "autonomousGoalLeases",
+                    "resourceUsageSnapshots",
+                    "resourceUsageAggregates",
+                    "resourceEconomics",
+                    "nodeRuntimeRecovery",
+                    "events",
+                ],
+                "mutations": (
+                    ["goal.create", "goal.pause", "goal.resume", "goal.steer", "goal.stop"]
+                    if settings.allow_goal_mutations
+                    else []
+                ),
                 "requiredScope": settings.required_scope,
+                "goalControlScope": settings.goal_control_scope,
+                "goalControls": {
+                    "softPause": "finish in-flight work; stop new dispatch",
+                    "hardPause": "request cancellation where supported; freeze durably",
+                    "resume": "continue from canonical persisted state",
+                    "steer": "journal guidance and re-evaluate while preserving valid work",
+                    "stop": "terminate intentionally with a durable reason",
+                },
                 "safety": {
-                    "readOnly": True,
+                    "readOnly": not settings.allow_goal_mutations,
                     "arbitraryShell": False,
                     "providerCredentialsAccepted": False,
                 },
@@ -150,6 +235,12 @@ def create_app(
                 "protocol": "v1",
                 "eventCursor": {"field": "sequence", "semantics": "exclusive"},
                 "streamFrames": ["snapshot", "events", "keepalive"],
+                "goalArtifact": "schemas/goal-v1.schema.json",
+                "goalControlArtifact": "schemas/goal-control-v1.schema.json",
+                "resourceSnapshotArtifact": "schemas/resource-usage-snapshot-v1.schema.json",
+                "resourceAggregateArtifact": "schemas/resource-usage-aggregate-v1.schema.json",
+                "resourceEconomicsArtifact": "schemas/resource-economics-v1.schema.json",
+                "nodeRuntimeRecoveryArtifact": "schemas/node-runtime-recovery-v1.schema.json",
             }
         )
 
@@ -161,9 +252,82 @@ def create_app(
     async def nodes() -> dict:
         return envelope(await asyncio.to_thread(projection.nodes))
 
+    @app.get("/v1/nodes/recovery", dependencies=[Depends(authorize)])
+    async def node_recovery(
+        node_id: str | None = Query(default=None, alias="nodeID"),
+    ) -> dict:
+        return envelope(await asyncio.to_thread(projection.node_recovery, node_id=node_id))
+
     @app.get("/v1/workers", dependencies=[Depends(authorize)])
     async def workers() -> dict:
         return envelope(await asyncio.to_thread(projection.workers))
+
+    @app.get("/v1/runs", dependencies=[Depends(authorize)])
+    async def runs(
+        task_id: str | None = Query(default=None, alias="taskID"),
+        worker_id: str | None = Query(default=None, alias="workerID"),
+        state: str | None = None,
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> dict:
+        if state is not None and state not in {item.value for item in RunState}:
+            raise HTTPException(status_code=400, detail="invalid run state")
+        return envelope(
+            await asyncio.to_thread(
+                projection.runs,
+                task_id=task_id,
+                worker_id=worker_id,
+                state=state,
+                limit=limit,
+            )
+        )
+
+    @app.get("/v1/runs/{run_id}", dependencies=[Depends(authorize)])
+    async def run(run_id: str) -> dict:
+        try:
+            value = await asyncio.to_thread(projection.run, run_id)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail=f"unknown run: {run_id}") from error
+        return envelope(value)
+
+    @app.get("/v1/escalations", dependencies=[Depends(authorize)])
+    async def execution_escalations(
+        run_id: str | None = Query(default=None, alias="runID"),
+        task_id: str | None = Query(default=None, alias="taskID"),
+        state: str | None = None,
+        code: str | None = None,
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> dict:
+        if state is not None and state not in {"open", "resolved", "dismissed"}:
+            raise HTTPException(status_code=400, detail="invalid escalation state")
+        allowed_codes = {
+            "PROVIDER_STATE_AMBIGUOUS",
+            "EXTERNAL_JOB_UNREACHABLE",
+            "IDEMPOTENCY_UNCERTAIN",
+            "RESUME_UNSUPPORTED",
+            "RESULT_COLLECTION_UNCERTAIN",
+        }
+        if code is not None and code not in allowed_codes:
+            raise HTTPException(status_code=400, detail="invalid escalation code")
+        return envelope(
+            await asyncio.to_thread(
+                projection.execution_escalations,
+                run_id=run_id,
+                task_id=task_id,
+                state=state,
+                code=code,
+                limit=limit,
+            )
+        )
+
+    @app.get("/v1/escalations/{escalation_id}", dependencies=[Depends(authorize)])
+    async def execution_escalation(escalation_id: str) -> dict:
+        try:
+            value = await asyncio.to_thread(projection.execution_escalation, escalation_id)
+        except KeyError as error:
+            raise HTTPException(
+                status_code=404, detail=f"unknown escalation: {escalation_id}"
+            ) from error
+        return envelope(value)
 
     @app.get("/v1/tasks", dependencies=[Depends(authorize)])
     async def tasks(state: str | None = None) -> dict:
@@ -180,6 +344,271 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"unknown task: {task_id}") from error
         return envelope(value)
 
+    @app.get("/v1/goals", dependencies=[Depends(authorize)])
+    async def goals(project_id: str | None = Query(default=None, alias="projectID")) -> dict:
+        return envelope(await asyncio.to_thread(projection.goals, project_id=project_id))
+
+    @app.get("/v1/goals/{goal_id}", dependencies=[Depends(authorize)])
+    async def goal(goal_id: str) -> dict:
+        try:
+            value = await asyncio.to_thread(projection.goal, goal_id)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail=f"unknown goal: {goal_id}") from error
+        return envelope(value)
+
+    @app.get("/v1/autonomy/hosts", dependencies=[Depends(authorize)])
+    async def autonomy_hosts() -> dict:
+        return envelope(await asyncio.to_thread(projection.autonomy_hosts))
+
+    @app.get("/v1/autonomy/hosts/{host_id}", dependencies=[Depends(authorize)])
+    async def autonomy_host(host_id: str) -> dict:
+        try:
+            values = await asyncio.to_thread(projection.autonomy_hosts, host_id=host_id)
+        except KeyError as error:
+            raise HTTPException(
+                status_code=404, detail=f"unknown autonomous host: {host_id}"
+            ) from error
+        return envelope(values[0])
+
+    @app.get("/v1/autonomy/leases", dependencies=[Depends(authorize)])
+    async def autonomy_goal_leases(
+        host_id: str | None = Query(default=None, alias="hostID"),
+        goal_id: str | None = Query(default=None, alias="goalID"),
+        owned_only: bool = Query(default=False, alias="ownedOnly"),
+    ) -> dict:
+        return envelope(
+            await asyncio.to_thread(
+                projection.autonomy_goal_leases,
+                host_id=host_id,
+                goal_id=goal_id,
+                owned_only=owned_only,
+            )
+        )
+
+    def _resource_filters(
+        *,
+        goal_id: str | None,
+        task_id: str | None,
+        provider: str | None,
+        model: str | None,
+        worker_id: str | None,
+        account_scope: str | None,
+        quota_pool_id: str | None,
+        observed_after: datetime | None,
+        observed_before: datetime | None,
+    ) -> dict[str, Any]:
+        for value in (observed_after, observed_before):
+            if value is not None and value.tzinfo is None:
+                raise HTTPException(status_code=400, detail="resource timestamps require timezone")
+        if (
+            observed_after is not None
+            and observed_before is not None
+            and observed_after > observed_before
+        ):
+            raise HTTPException(
+                status_code=400, detail="observedAfter cannot exceed observedBefore"
+            )
+        return {
+            "goal_id": goal_id,
+            "task_id": task_id,
+            "provider": provider,
+            "model": model,
+            "worker_id": worker_id,
+            "account_scope": account_scope,
+            "quota_pool_id": quota_pool_id,
+            "observed_after": observed_after,
+            "observed_before": observed_before,
+        }
+
+    @app.get("/v1/resources/snapshots", dependencies=[Depends(authorize)])
+    async def resource_snapshots(
+        goal_id: str | None = Query(default=None, alias="goalID"),
+        task_id: str | None = Query(default=None, alias="taskID"),
+        provider: str | None = None,
+        model: str | None = None,
+        worker_id: str | None = Query(default=None, alias="workerID"),
+        account_scope: str | None = Query(default=None, alias="accountScope"),
+        quota_pool_id: str | None = Query(default=None, alias="quotaPoolID"),
+        observed_after: Annotated[datetime | None, Query(alias="observedAfter")] = None,
+        observed_before: Annotated[datetime | None, Query(alias="observedBefore")] = None,
+        limit: int = Query(default=1000, ge=1, le=10_000),
+    ) -> dict:
+        filters = _resource_filters(
+            goal_id=goal_id,
+            task_id=task_id,
+            provider=provider,
+            model=model,
+            worker_id=worker_id,
+            account_scope=account_scope,
+            quota_pool_id=quota_pool_id,
+            observed_after=observed_after,
+            observed_before=observed_before,
+        )
+        return envelope(
+            await asyncio.to_thread(projection.resource_snapshots, **filters, limit=limit)
+        )
+
+    @app.get("/v1/resources/aggregate", dependencies=[Depends(authorize)])
+    async def resource_aggregate(
+        goal_id: str | None = Query(default=None, alias="goalID"),
+        task_id: str | None = Query(default=None, alias="taskID"),
+        provider: str | None = None,
+        model: str | None = None,
+        worker_id: str | None = Query(default=None, alias="workerID"),
+        account_scope: str | None = Query(default=None, alias="accountScope"),
+        quota_pool_id: str | None = Query(default=None, alias="quotaPoolID"),
+        observed_after: Annotated[datetime | None, Query(alias="observedAfter")] = None,
+        observed_before: Annotated[datetime | None, Query(alias="observedBefore")] = None,
+    ) -> dict:
+        filters = _resource_filters(
+            goal_id=goal_id,
+            task_id=task_id,
+            provider=provider,
+            model=model,
+            worker_id=worker_id,
+            account_scope=account_scope,
+            quota_pool_id=quota_pool_id,
+            observed_after=observed_after,
+            observed_before=observed_before,
+        )
+        return envelope(await asyncio.to_thread(projection.resource_aggregate, **filters))
+
+    @app.get("/v1/resources/economics", dependencies=[Depends(authorize)])
+    async def resource_economics(
+        project_id: str | None = Query(default=None, alias="projectID"),
+        goal_id: str | None = Query(default=None, alias="goalID"),
+    ) -> dict:
+        try:
+            value = await asyncio.to_thread(
+                projection.resource_economics, project_id=project_id, goal_id=goal_id
+            )
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail=f"unknown goal: {goal_id}") from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return envelope(value)
+
+    @app.post(
+        "/v1/goals",
+        status_code=201,
+        dependencies=[Depends(authorize_goal_control)],
+    )
+    async def create_goal(body: GoalCreateRequest) -> dict:
+        from project_supervisor.autonomy import GoalBudget
+
+        budgets = GoalBudget(**body.budgets.model_dump()) if body.budgets is not None else None
+        try:
+            row = await asyncio.to_thread(
+                goal_service.create_goal,
+                project_id=body.project_id,
+                intent=body.intent,
+                budgets=budgets,
+                goal_id=body.goal_id,
+                actor="human:api",
+            )
+        except KeyError as error:
+            raise HTTPException(
+                status_code=404,
+                detail=f"unknown project: {body.project_id}",
+            ) from error
+        except (sqlite3.IntegrityError, ValueError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return envelope(projection._goal(row))
+
+    @app.post(
+        "/v1/goals/{goal_id}/pause",
+        dependencies=[Depends(authorize_goal_control)],
+    )
+    async def pause_goal(goal_id: str, body: GoalPauseRequest) -> dict:
+        value = await _apply_goal_control(
+            goal_id,
+            goal_service.pause,
+            body.mode,
+            reason=body.reason,
+        )
+        return envelope(value)
+
+    @app.post(
+        "/v1/goals/{goal_id}/resume",
+        dependencies=[Depends(authorize_goal_control)],
+    )
+    async def resume_goal(goal_id: str, body: GoalResumeRequest) -> dict:
+        return envelope(await _apply_goal_control(goal_id, goal_service.resume, reason=body.reason))
+
+    @app.post(
+        "/v1/goals/{goal_id}/steer",
+        dependencies=[Depends(authorize_goal_control)],
+    )
+    async def steer_goal(goal_id: str, body: GoalSteerRequest) -> dict:
+        return envelope(
+            await _apply_goal_control(
+                goal_id,
+                goal_service.steer,
+                body.instruction,
+                priority=body.priority,
+                preserve_valid_work=body.preserve_valid_work,
+            )
+        )
+
+    @app.post(
+        "/v1/goals/{goal_id}/stop",
+        dependencies=[Depends(authorize_goal_control)],
+    )
+    async def stop_goal(goal_id: str, body: GoalStopRequest) -> dict:
+        return envelope(await _apply_goal_control(goal_id, goal_service.stop, reason=body.reason))
+
+    @app.get("/v1/telemetry", dependencies=[Depends(authorize)])
+    async def telemetry(
+        goal_id: str | None = Query(default=None, alias="goalID"),
+        task_id: str | None = Query(default=None, alias="taskID"),
+        limit: int = Query(default=1000, ge=1, le=10_000),
+    ) -> dict:
+        """Return normalized invocation facts and aggregates without provider secrets."""
+
+        from project_supervisor.telemetry import InvocationTelemetryRepository
+
+        repository = InvocationTelemetryRepository(store)
+        records = await asyncio.to_thread(
+            repository.list,
+            goal_id=goal_id,
+            task_id=task_id,
+            limit=limit,
+        )
+        try:
+            aggregate = await asyncio.to_thread(
+                repository.aggregate,
+                goal_id=goal_id,
+                task_id=task_id,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return envelope(
+            {
+                "aggregate": aggregate.to_protocol(),
+                "invocations": [record.to_protocol() for record in records],
+            }
+        )
+
+    async def _apply_goal_control(
+        goal_id: str,
+        operation: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        try:
+            row = await asyncio.to_thread(
+                operation,
+                goal_id,
+                *args,
+                **kwargs,
+                actor="human:api",
+            )
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail=f"unknown goal: {goal_id}") from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return projection._goal(row)
+
     @app.get("/v1/events", dependencies=[Depends(authorize)])
     async def events(
         limit: int = Query(default=100, ge=1, le=500),
@@ -188,6 +617,7 @@ def create_app(
         node: str | None = None,
         harness: str | None = None,
         task: str | None = None,
+        goal: str | None = None,
         kind: str | None = None,
         min_severity: str = Query(default="debug", alias="minSeverity"),
         q: str | None = None,
@@ -203,6 +633,7 @@ def create_app(
                 nodes=_csv(node),
                 harnesses=_csv(harness),
                 tasks=_csv(task),
+                goals=_csv(goal),
                 kinds=_csv(kind),
                 minimum_severity=min_severity,
                 search=q,

@@ -48,7 +48,7 @@ def test_evidence_manifest_matches_schema_and_artifact_checksums(manifest_path: 
 def test_real_acceptance_manifest_still_records_a_passing_gate() -> None:
     manifest_path = EVIDENCE_ROOT / "acceptance-evidence.json"
     if not manifest_path.is_file():
-        pytest.skip("private real-host acceptance evidence is excluded from public source")
+        pytest.skip("private acceptance evidence is intentionally absent from public source")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["status"] == "PASS"
 

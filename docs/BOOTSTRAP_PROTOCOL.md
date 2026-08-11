@@ -2,9 +2,10 @@
 
 ## Maturity
 
-The discovery and planning phases below are **IMPLEMENTED**. Later phases are a versioned design
-**FOUNDATION** and require capability-broker, identity, transport, and node-runtime implementation
-before they may be advertised as automated.
+Discovery, planning, and the durable lifecycle/audit recorder are **IMPLEMENTED**. Later phases are
+an approval-scoped **FOUNDATION**: the recorder accepts a structured result only after a separate
+authorized executor performed the operation. It is not a Privilege Broker, grant verifier,
+installer, identity system, or transport configurator.
 
 ## Phases
 
@@ -18,8 +19,9 @@ before they may be advertised as automated.
 8. `VERIFY`: run protocol, security, isolation, and restart/recovery acceptance.
 9. `COMMIT`: persist reviewed node/Worker registration and append audit events.
 
-No phase may silently skip a failed prerequisite. Re-running must preserve stable identity and
-canonical state, not create duplicates. Rollback/recovery metadata must accompany every mutation.
+No phase may silently skip a failed prerequisite. Re-running the same run ID with identical evidence
+is idempotent; changed evidence fails closed. A conflicting result idempotency key is rejected.
+Rollback/recovery metadata must accompany every real mutation at the future executor boundary.
 
 ## Discovery contract
 
@@ -29,9 +31,24 @@ inspected. `null`/empty means unavailable, not absent hardware.
 
 ## Plan contract
 
-`schemaVersion: 1` identifies `universal-bootstrap-foundation`, `mode: dryRun`, `failClosed: true`,
-ordered steps with reason/status/mutation flags, an empty `automaticActions`, and the prohibited
-automatic actions. Given the same profile, the plan is byte-stable after canonical JSON encoding.
+`schemaVersion: 2` identifies `universal-bootstrap-lifecycle-foundation`, `mode: dryRun`,
+`failClosed: true`, ordered phase/dependency/action records, a scoped capability for every mutating
+step, an empty `automaticActions`, and the prohibited automatic actions. Given the same profile, the
+plan is byte-stable after canonical JSON encoding.
+
+## Durable run and result contracts
+
+`bootstrap-run-v1` stores only profile/plan digests, ordered step projections, non-secret external
+authorization references, and an append-only hash-chained audit. SQLite WAL and `synchronous=FULL`
+provide restart durability. The raw profile remains machine-local and is not copied into the run
+projection.
+
+`bootstrap-step-result-v1` is bounded to 32 KiB and requires run/step/idempotency identities,
+outcome, execution mode, actor, time, evidence, and optional authority reference. Mutating success
+requires `externallyExecuted`, the exact planned capability, and a human, enterprise,
+Privilege-Broker, or trusted-node authority type. This proves only that the recorder accepted an
+attributed assertion; production execution still requires real signature, issuer, expiry, replay,
+constraint, target, and rollback validation.
 
 ## Error rules
 

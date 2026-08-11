@@ -7,7 +7,12 @@ from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from typing import Any
 
-from .base import UnsafeWorkerRequest, WorkerRequest, request_requires_code_write
+from .base import (
+    UnsafeWorkerRequest,
+    WorkerProtocolError,
+    WorkerRequest,
+    request_requires_code_write,
+)
 from .native import NativeSubprocessAdapter, ParsedOutput
 
 _CONVERSATION_PATTERNS = (
@@ -30,8 +35,21 @@ class AgyAdapter(NativeSubprocessAdapter):
     are parsed from the captured diagnostic stream when present.
     """
 
-    def __init__(self, executable: str = "agy", **kwargs: Any) -> None:
+    def __init__(
+        self,
+        executable: str = "agy",
+        *,
+        max_diagnostic_bytes: int = 256 * 1024,
+        **kwargs: Any,
+    ) -> None:
+        if (
+            not isinstance(max_diagnostic_bytes, int)
+            or isinstance(max_diagnostic_bytes, bool)
+            or max_diagnostic_bytes <= 0
+        ):
+            raise ValueError("AGY diagnostic limit must be a positive integer")
         super().__init__(executable, **kwargs)
+        self.max_diagnostic_bytes = max_diagnostic_bytes
         self._diagnostic_paths: dict[str, str] = {}
 
     def command_arguments(self, request: WorkerRequest) -> Sequence[str]:
@@ -84,10 +102,17 @@ class AgyAdapter(NativeSubprocessAdapter):
         path = self._diagnostic_paths.get(request.run_id)
         if path:
             try:
-                with open(path, encoding="utf-8", errors="replace") as log_file:
-                    diagnostic = f"{diagnostic}\n{log_file.read()}"
+                with open(path, "rb") as log_file:
+                    raw_diagnostic = log_file.read(self.max_diagnostic_bytes + 1)
+                if len(raw_diagnostic) > self.max_diagnostic_bytes:
+                    raise WorkerProtocolError("AGY diagnostic output exceeded its capture limit")
+                diagnostic = f"{diagnostic}\n{raw_diagnostic.decode('utf-8', errors='replace')}"
             except FileNotFoundError:
                 pass
+            except OSError as error:
+                raise WorkerProtocolError(
+                    f"AGY diagnostic output could not be read ({type(error).__name__})"
+                ) from error
         for pattern in _CONVERSATION_PATTERNS:
             match = pattern.search(diagnostic)
             if match:
@@ -98,6 +123,16 @@ class AgyAdapter(NativeSubprocessAdapter):
             if model_match:
                 parsed.model = model_match.group(1).strip()
                 break
+
+    def validate_output(
+        self,
+        request: WorkerRequest,
+        parsed: ParsedOutput,
+        stdout: str,
+        stderr: str,
+    ) -> None:
+        if not parsed.final_text or not parsed.final_text.strip():
+            raise WorkerProtocolError("AGY output is empty")
 
     @staticmethod
     def _reject_code_write(request: WorkerRequest) -> None:

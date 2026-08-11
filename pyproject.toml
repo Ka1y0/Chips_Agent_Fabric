@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "project-supervisor"
-version = "0.1.0a1"
+version = "0.2.0b1"
 description = "Local-first, event-driven supervisor for heterogeneous AI workers"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -13,13 +13,13 @@ authors = [{ name = "CHIPS Agent Fabric" }]
 dependencies = [
   "fastapi>=0.115,<1",
   "httpx>=0.28,<1",
+  "jsonschema>=4.23,<5",
   "pydantic>=2.10,<3",
   "uvicorn[standard]>=0.34,<1",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "jsonschema>=4.23,<5",
   "pytest>=8.3,<10",
   "pytest-asyncio>=0.25,<2",
   "ruff>=0.9,<1",
@@ -37,11 +37,13 @@ exclude = [
   "/.pytest_cache",
   "/.ruff_cache",
   "/.venv",
-  "/artifacts/goal-run",
-  "/artifacts/open-source-v0.1",
+  "/artifacts",
   "/build",
+  "/CyberOffice",
+  "/CyberIsland",
   "/dist",
   "/docs/CLAUDE_GOAL_HANDOFF.md",
+  "/ArtLab",
   "/local-state",
   "/logs",
   "/scripts/run_local_worker_acceptance.py",

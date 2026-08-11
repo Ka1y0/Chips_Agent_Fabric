@@ -5,9 +5,12 @@ import json
 import os
 import re
 import shutil
+import signal
 import tempfile
+import time
 from abc import abstractmethod
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -134,6 +137,9 @@ class ParsedOutput:
     context_variant: str | None = None
     usage: Usage = field(default_factory=Usage)
     provider_event_types: set[str] = field(default_factory=set)
+    provider_event_counts: dict[str, int] = field(default_factory=dict)
+    terminal_event_count: int = 0
+    terminal_error: str | None = None
 
 
 class NativeSubprocessAdapter(WorkerAdapter):
@@ -146,12 +152,35 @@ class NativeSubprocessAdapter(WorkerAdapter):
         heartbeat_seconds: float = 1.0,
         termination_grace_seconds: float = 2.0,
         environment: Mapping[str, str] | None = None,
+        max_stdout_bytes: int = 4 * 1024 * 1024,
+        max_stderr_bytes: int = 1024 * 1024,
+        max_line_bytes: int = 64 * 1024,
+        max_output_lines: int = 20_000,
+        max_output_events: int = 20_000,
     ) -> None:
+        limits = {
+            "max_stdout_bytes": max_stdout_bytes,
+            "max_stderr_bytes": max_stderr_bytes,
+            "max_line_bytes": max_line_bytes,
+            "max_output_lines": max_output_lines,
+            "max_output_events": max_output_events,
+        }
+        if any(
+            not isinstance(value, int) or isinstance(value, bool) or value <= 0
+            for value in limits.values()
+        ):
+            raise ValueError("native Worker output limits must be positive integers")
         self.executable = executable
         self.heartbeat_seconds = heartbeat_seconds
         self.termination_grace_seconds = termination_grace_seconds
         self.environment = dict(environment or {})
+        self.max_stdout_bytes = max_stdout_bytes
+        self.max_stderr_bytes = max_stderr_bytes
+        self.max_line_bytes = max_line_bytes
+        self.max_output_lines = max_output_lines
+        self.max_output_events = max_output_events
         self._processes: dict[str, asyncio.subprocess.Process] = {}
+        self._starting_runs: set[str] = set()
         self._cancelled_runs: set[str] = set()
         self._lock = asyncio.Lock()
 
@@ -173,6 +202,24 @@ class NativeSubprocessAdapter(WorkerAdapter):
         if parsed.final_text is None:
             parsed.final_text = "".join(parsed.text_fragments).strip() or stdout.strip()
 
+    def validate_output(
+        self,
+        request: WorkerRequest,
+        parsed: ParsedOutput,
+        stdout: str,
+        stderr: str,
+    ) -> None:
+        """Validate a provider-specific terminal transcript after bounded capture."""
+
+    def stdin_payload(self, request: WorkerRequest) -> bytes | None:
+        """Return bounded provider input for stdin, or ``None`` to close stdin.
+
+        Native adapters default to no stdin.  Providers whose reviewed CLI contract accepts a
+        prompt on stdin can opt in without placing user content in argv or invoking a shell.
+        """
+
+        return None
+
     async def execute(
         self,
         request: WorkerRequest,
@@ -188,6 +235,19 @@ class NativeSubprocessAdapter(WorkerAdapter):
         process: asyncio.subprocess.Process | None = None
         timed_out = False
         cancelled = False
+        output_failure: str | None = None
+        output_failed = asyncio.Event()
+        stream_bytes = {"stdout": 0, "stderr": 0}
+        output_line_count = 0
+        output_event_count = 0
+        rejection_emitted = False
+        owns_start_reservation = False
+
+        def reject_output(code: str, detail: str) -> None:
+            nonlocal output_failure
+            if output_failure is None:
+                output_failure = f"{code}: {detail}"
+                output_failed.set()
 
         async def emit(kind: str, payload: Mapping[str, Any] | None = None) -> None:
             event = WorkerEvent(request.run_id, kind, event_time(), redact(payload or {}))
@@ -206,21 +266,33 @@ class NativeSubprocessAdapter(WorkerAdapter):
                 raise WorkerUnavailable(f"working directory is unavailable: {cwd}")
 
         args = [executable, *self.command_arguments(request)]
+        stdin_payload = self.stdin_payload(request)
+        if stdin_payload is not None and not isinstance(stdin_payload, bytes):
+            raise TypeError("native Worker stdin payload must be bytes")
         env = child_environment(os.environ, self.environment)
         try:
+            async with self._lock:
+                if request.run_id in self._starting_runs or request.run_id in self._processes:
+                    raise ValueError(f"run already active: {request.run_id}")
+                self._starting_runs.add(request.run_id)
+                owns_start_reservation = True
             process = await asyncio.create_subprocess_exec(
                 *args,
                 cwd=cwd,
                 env=env,
-                stdin=asyncio.subprocess.DEVNULL,
+                stdin=(
+                    asyncio.subprocess.PIPE
+                    if stdin_payload is not None
+                    else asyncio.subprocess.DEVNULL
+                ),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
+                limit=self.max_line_bytes + 1,
             )
             async with self._lock:
-                if request.run_id in self._processes:
-                    await self._stop_process(process)
-                    raise ValueError(f"run already active: {request.run_id}")
+                self._starting_runs.discard(request.run_id)
+                owns_start_reservation = False
                 self._processes[request.run_id] = process
             await emit("processStarted", {"pid": process.pid, "executable": executable})
 
@@ -229,22 +301,92 @@ class NativeSubprocessAdapter(WorkerAdapter):
                 destination: list[str],
                 stream_name: str,
             ) -> None:
+                nonlocal output_line_count, output_event_count
                 if stream is None:
                     return
-                while raw_line := await stream.readline():
-                    line = redact_output_line(raw_line.decode("utf-8", errors="replace"))
-                    destination.append(line)
-                    payload: Mapping[str, Any] = {"stream": stream_name, "bytes": len(raw_line)}
-                    if stream_name == "stdout":
+
+                async def discard_remainder() -> None:
+                    """Drain a rejected pipe so asyncio can reap a blocked child."""
+
+                    with suppress(Exception):
+                        while await stream.read(64 * 1024):
+                            pass
+
+                try:
+                    while True:
                         try:
-                            payload = self.consume_stdout_line(line.rstrip("\r\n"), parsed)
-                        except (json.JSONDecodeError, TypeError, ValueError) as error:
-                            payload = {
-                                "stream": stream_name,
-                                "malformed": True,
-                                "error": str(redact(str(error))),
-                            }
-                    await emit("workerOutput", payload)
+                            raw_line = await stream.readline()
+                        except (ValueError, asyncio.LimitOverrunError):
+                            reject_output(
+                                "OUTPUT_LIMIT",
+                                f"{stream_name} line exceeded {self.max_line_bytes} bytes",
+                            )
+                            await discard_remainder()
+                            return
+                        if not raw_line:
+                            return
+                        if len(raw_line) > self.max_line_bytes:
+                            reject_output(
+                                "OUTPUT_LIMIT",
+                                f"{stream_name} line exceeded {self.max_line_bytes} bytes",
+                            )
+                            await discard_remainder()
+                            return
+                        stream_bytes[stream_name] += len(raw_line)
+                        stream_limit = (
+                            self.max_stdout_bytes
+                            if stream_name == "stdout"
+                            else self.max_stderr_bytes
+                        )
+                        if stream_bytes[stream_name] > stream_limit:
+                            reject_output(
+                                "OUTPUT_LIMIT",
+                                f"{stream_name} exceeded {stream_limit} captured bytes",
+                            )
+                            await discard_remainder()
+                            return
+                        output_line_count += 1
+                        if output_line_count > self.max_output_lines:
+                            reject_output(
+                                "OUTPUT_LIMIT",
+                                f"Worker emitted more than {self.max_output_lines} lines",
+                            )
+                            await discard_remainder()
+                            return
+                        line = redact_output_line(raw_line.decode("utf-8", errors="replace"))
+                        destination.append(line)
+                        payload: Mapping[str, Any] = {
+                            "stream": stream_name,
+                            "bytes": len(raw_line),
+                        }
+                        if stream_name == "stdout":
+                            try:
+                                payload = self.consume_stdout_line(line.rstrip("\r\n"), parsed)
+                            except (json.JSONDecodeError, TypeError, ValueError) as error:
+                                reject_output(
+                                    "RESULT_INVALID",
+                                    "stdout did not match the registered adapter protocol "
+                                    f"({type(error).__name__})",
+                                )
+                                await discard_remainder()
+                                return
+                        output_event_count += 1
+                        if output_event_count > self.max_output_events:
+                            reject_output(
+                                "OUTPUT_LIMIT",
+                                f"Worker emitted more than {self.max_output_events} output events",
+                            )
+                            await discard_remainder()
+                            return
+                        await emit("workerOutput", payload)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:  # pragma: no cover - defensive stream boundary
+                    reject_output(
+                        "RESULT_INVALID",
+                        f"{stream_name} capture failed ({type(error).__name__})",
+                    )
+                    await discard_remainder()
 
             async def heartbeat() -> None:
                 while process.returncode is None:
@@ -257,24 +399,94 @@ class NativeSubprocessAdapter(WorkerAdapter):
                 asyncio.create_task(read_stream(process.stderr, stderr_lines, "stderr")),
             ]
             heartbeat_task = asyncio.create_task(heartbeat())
+            process_wait = asyncio.create_task(process.wait())
+            output_failure_wait = asyncio.create_task(output_failed.wait())
             try:
-                await asyncio.wait_for(process.wait(), timeout=request.timeout_seconds)
-            except TimeoutError:
+                if stdin_payload is not None:
+                    if process.stdin is None:  # pragma: no cover - asyncio contract guard
+                        raise RuntimeError("native Worker stdin pipe is unavailable")
+                    try:
+                        process.stdin.write(stdin_payload)
+                        await asyncio.wait_for(
+                            process.stdin.drain(), timeout=request.timeout_seconds
+                        )
+                    except (BrokenPipeError, ConnectionResetError):
+                        # The terminal process status and strict output validator remain
+                        # authoritative when a CLI exits before consuming its full input.
+                        pass
+                    finally:
+                        process.stdin.close()
+                        with suppress(BrokenPipeError, ConnectionResetError, TimeoutError):
+                            await asyncio.wait_for(
+                                process.stdin.wait_closed(),
+                                timeout=self.termination_grace_seconds,
+                            )
+                done, _pending = await asyncio.wait(
+                    {process_wait, output_failure_wait},
+                    timeout=request.timeout_seconds,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if not done:
+                    timed_out = True
+                    await emit("processTimedOut", {"timeoutSeconds": request.timeout_seconds})
+                    await self._stop_process(process)
+                elif output_failure_wait in done and output_failure is not None:
+                    await emit("workerOutputRejected", {"reason": output_failure})
+                    rejection_emitted = True
+                    await self._stop_process(process)
+                await process_wait
+            except TimeoutError:  # pragma: no cover - _stop_process owns its bounded escalation
                 timed_out = True
-                await emit("processTimedOut", {"timeoutSeconds": request.timeout_seconds})
                 await self._stop_process(process)
             except asyncio.CancelledError:
                 cancelled = True
                 await self._stop_process(process)
                 raise
             finally:
-                await asyncio.gather(*readers, return_exceptions=True)
+                output_failure_wait.cancel()
+                await asyncio.gather(output_failure_wait, return_exceptions=True)
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*readers), timeout=self.termination_grace_seconds
+                    )
+                except TimeoutError:
+                    reject_output(
+                        "PROCESS_LOST",
+                        "Worker process tree kept output pipes open after leader exit",
+                    )
+                    await self._stop_process(process)
+                    for reader in readers:
+                        reader.cancel()
+                    await asyncio.gather(*readers, return_exceptions=True)
                 heartbeat_task.cancel()
                 await asyncio.gather(heartbeat_task, return_exceptions=True)
 
+            if os.name != "nt" and self._process_group_alive(process.pid):
+                reject_output(
+                    "PROCESS_LOST",
+                    "Worker left a live process in its execution group",
+                )
+                await self._stop_process(process)
+
             stdout = "".join(stdout_lines)
             stderr = "".join(stderr_lines)
-            self.finalize_output(request, parsed, stdout, stderr)
+            if (
+                output_failure is None
+                and process.returncode == 0
+                and not timed_out
+                and not cancelled
+                and request.run_id not in self._cancelled_runs
+            ):
+                try:
+                    self.finalize_output(request, parsed, stdout, stderr)
+                    self.validate_output(request, parsed, stdout, stderr)
+                except Exception as error:
+                    reject_output(
+                        "RESULT_INVALID",
+                        f"terminal output validation failed ({type(error).__name__})",
+                    )
+            if output_failure is not None and not rejection_emitted:
+                await emit("workerOutputRejected", {"reason": output_failure})
             exit_code = process.returncode
             if timed_out:
                 state = RunState.TIMED_OUT
@@ -282,6 +494,9 @@ class NativeSubprocessAdapter(WorkerAdapter):
             elif cancelled or request.run_id in self._cancelled_runs:
                 state = RunState.CANCELLED
                 error = "worker was cancelled"
+            elif output_failure is not None:
+                state = RunState.FAILED
+                error = output_failure
             elif exit_code == 0:
                 state = RunState.COMPLETED
                 error = None
@@ -309,17 +524,24 @@ class NativeSubprocessAdapter(WorkerAdapter):
                 usage=parsed.usage,
                 error=str(redact(error)) if error else None,
             )
+        except BaseException:
+            if process is not None and self._process_tree_active(process):
+                await self._stop_process(process)
+            raise
         finally:
             async with self._lock:
-                self._processes.pop(request.run_id, None)
-                self._cancelled_runs.discard(request.run_id)
+                if owns_start_reservation:
+                    self._starting_runs.discard(request.run_id)
+                if process is not None and self._processes.get(request.run_id) is process:
+                    self._processes.pop(request.run_id, None)
+                    self._cancelled_runs.discard(request.run_id)
             if temporary_directory is not None:
                 temporary_directory.cleanup()
 
     async def cancel(self, run_id: str) -> bool:
         async with self._lock:
             process = self._processes.get(run_id)
-        if process is None or process.returncode is not None:
+        if process is None or not self._process_tree_active(process):
             return False
         async with self._lock:
             self._cancelled_runs.add(run_id)
@@ -338,11 +560,46 @@ class NativeSubprocessAdapter(WorkerAdapter):
         return resolved
 
     async def _stop_process(self, process: asyncio.subprocess.Process) -> None:
-        if process.returncode is not None:
+        if os.name == "nt":
+            if process.returncode is not None:
+                return
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=self.termination_grace_seconds)
+            except TimeoutError:
+                process.kill()
+                await process.wait()
             return
-        process.terminate()
-        try:
-            await asyncio.wait_for(process.wait(), timeout=self.termination_grace_seconds)
-        except TimeoutError:
-            process.kill()
+
+        if not self._process_group_alive(process.pid):
+            if process.returncode is None:
+                await process.wait()
+            return
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGTERM)
+        deadline = time.monotonic() + self.termination_grace_seconds
+        while self._process_group_alive(process.pid) and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+        if self._process_group_alive(process.pid):
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+        if process.returncode is None:
             await process.wait()
+
+    @staticmethod
+    def _process_group_alive(process_group_id: int) -> bool:
+        if os.name == "nt":
+            return False
+        try:
+            os.killpg(process_group_id, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    @classmethod
+    def _process_tree_active(cls, process: asyncio.subprocess.Process) -> bool:
+        if os.name == "nt":
+            return process.returncode is None
+        return cls._process_group_alive(process.pid)

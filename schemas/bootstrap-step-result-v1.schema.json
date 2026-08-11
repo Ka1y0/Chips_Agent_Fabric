@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chips-agent-fabric.invalid/schemas/bootstrap-step-result-v1.schema.json",
+  "title": "CHIPS Agent Fabric Bootstrap Step Result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runID",
+    "stepID",
+    "idempotencyKey",
+    "outcome",
+    "executionMode",
+    "actor",
+    "observedAt",
+    "evidence",
+    "authorization"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "runID": {"$ref": "#/$defs/identifier"},
+    "stepID": {"$ref": "#/$defs/identifier"},
+    "idempotencyKey": {"$ref": "#/$defs/identifier"},
+    "outcome": {"enum": ["succeeded", "failed"]},
+    "executionMode": {"enum": ["observedOnly", "externallyExecuted"]},
+    "actor": {"$ref": "#/$defs/identifier"},
+    "observedAt": {"type": "string", "format": "date-time"},
+    "evidence": {"type": "object", "maxProperties": 64},
+    "authorization": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "grantReference", "capability", "subject", "verifiedBy", "authorityType"
+          ],
+          "properties": {
+            "grantReference": {"$ref": "#/$defs/identifier"},
+            "capability": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)+$"
+            },
+            "subject": {"$ref": "#/$defs/identifier"},
+            "verifiedBy": {"$ref": "#/$defs/identifier"},
+            "authorityType": {
+              "enum": ["human", "enterprise", "privilegeBroker", "trustedNode"]
+            }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    }
+  }
+}

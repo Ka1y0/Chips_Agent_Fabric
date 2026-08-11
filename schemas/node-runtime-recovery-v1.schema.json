@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chips-agent-fabric.invalid/schemas/node-runtime-recovery-v1.schema.json",
+  "title": "CHIPS Agent Fabric Node Runtime Recovery Status v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id", "nodeID", "runtimeID", "backendEndpoint", "requiredCapability",
+    "expectedModels", "workerIDs", "enabled", "maxAttempts", "monitorIntervalSeconds",
+    "failureBackoffSeconds", "leaseTTLSeconds", "latestRecovery", "lease", "monitoring"
+  ],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "nodeID": {"type": "string", "minLength": 1},
+    "runtimeID": {"type": "string", "minLength": 1},
+    "backendEndpoint": {
+      "type": "string",
+      "allOf": [
+        {"pattern": "^https?://(?:127\\.0\\.0\\.1|localhost|\\[::1\\]):[0-9]+/?$"},
+        {"not": {"pattern": "[\\r\\n\\u2028\\u2029]"}}
+      ]
+    },
+    "requiredCapability": {"type": "string", "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)+$"},
+    "expectedModels": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+    "workerIDs": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+    "enabled": {"type": "boolean"},
+    "maxAttempts": {"type": "integer", "minimum": 1, "maximum": 3},
+    "monitorIntervalSeconds": {"type": "number", "minimum": 5, "maximum": 3600},
+    "failureBackoffSeconds": {"type": "number", "minimum": 5, "maximum": 86400},
+    "leaseTTLSeconds": {"type": "number", "minimum": 15, "maximum": 300},
+    "latestRecovery": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "state", "attemptCount", "failureCode", "failureDetail", "updatedAt"],
+          "properties": {
+            "id": {"type": "string", "minLength": 1},
+            "state": {"enum": ["observedHealthy", "degraded", "permissionRequired", "recovering", "verifying", "ready", "failed"]},
+            "attemptCount": {"type": "integer", "minimum": 0, "maximum": 3},
+            "failureCode": {"type": ["string", "null"]},
+            "failureDetail": {"type": ["string", "null"]},
+            "updatedAt": {"type": "string", "format": "date-time"}
+          }
+        }
+      ]
+    },
+    "lease": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ownerID", "generation", "state", "heartbeatAt", "expiresAt", "recoveryState"],
+          "properties": {
+            "ownerID": {"type": "string", "minLength": 1},
+            "generation": {"type": "integer", "minimum": 1},
+            "state": {"enum": ["owned", "released", "lost"]},
+            "heartbeatAt": {"type": "string", "format": "date-time"},
+            "expiresAt": {"type": "string", "format": "date-time"},
+            "recoveryState": {"enum": ["fresh", "resuming", "staleOwnerRecovered", "complete", "lost"]}
+          }
+        }
+      ]
+    },
+    "monitoring": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["monitorID", "lastState", "consecutiveFailures", "lastObservedAt", "nextObservationAt", "lastError", "host"],
+          "properties": {
+            "monitorID": {"type": ["string", "null"]},
+            "lastState": {"type": ["string", "null"]},
+            "consecutiveFailures": {"type": "integer", "minimum": 0},
+            "lastObservedAt": {"type": ["string", "null"], "format": "date-time"},
+            "nextObservationAt": {"type": "string", "format": "date-time"},
+            "lastError": {"type": ["string", "null"]},
+            "host": {
+              "oneOf": [
+                {"type": "null"},
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["id", "state", "startedAt", "heartbeatAt", "activePolicyCount", "lastError"],
+                  "properties": {
+                    "id": {"type": "string", "minLength": 1},
+                    "state": {"enum": ["starting", "running", "stopping", "stopped", "failed"]},
+                    "startedAt": {"type": "string", "format": "date-time"},
+                    "heartbeatAt": {"type": "string", "format": "date-time"},
+                    "activePolicyCount": {"type": "integer", "minimum": 0},
+                    "lastError": {"type": ["string", "null"]}
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

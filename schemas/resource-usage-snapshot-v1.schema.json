@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chips-agent-fabric.invalid/schemas/resource-usage-snapshot-v1.schema.json",
+  "title": "CHIPS Agent Fabric Resource Usage Snapshot v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id", "auditID", "projectID", "goalID", "taskID", "runID", "provider",
+    "accountScope", "planTier", "workerID", "model", "quotaPoolID", "quotaWindow",
+    "used", "remaining", "resetAt", "taskLocal", "quotaState", "quotaStateProvenance",
+    "observedAt", "freshUntil", "freshness", "source", "confidence", "metadata"
+  ],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "auditID": {"type": "string", "minLength": 1},
+    "projectID": {"type": "string", "minLength": 1},
+    "goalID": {"type": ["string", "null"], "minLength": 1},
+    "taskID": {"type": "string", "minLength": 1},
+    "runID": {"type": ["string", "null"], "minLength": 1},
+    "provider": {"type": "string", "minLength": 1},
+    "accountScope": {"$ref": "#/$defs/dimension"},
+    "planTier": {"$ref": "#/$defs/dimension"},
+    "workerID": {"type": ["string", "null"], "minLength": 1},
+    "model": {"$ref": "#/$defs/dimension"},
+    "quotaPoolID": {"type": "string", "minLength": 1},
+    "quotaWindow": {"$ref": "#/$defs/dimension"},
+    "used": {"$ref": "#/$defs/metric"},
+    "remaining": {"$ref": "#/$defs/metric"},
+    "resetAt": {"$ref": "#/$defs/instant"},
+    "taskLocal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["calls", "inputTokens", "outputTokens", "cachedTokens", "cost"],
+      "properties": {
+        "calls": {"$ref": "#/$defs/metric"},
+        "inputTokens": {"$ref": "#/$defs/metric"},
+        "outputTokens": {"$ref": "#/$defs/metric"},
+        "cachedTokens": {"$ref": "#/$defs/metric"},
+        "cost": {"$ref": "#/$defs/metric"}
+      }
+    },
+    "quotaState": {"enum": ["available", "warning", "critical", "exhausted", "unknown"]},
+    "quotaStateProvenance": {"$ref": "#/$defs/provenance"},
+    "observedAt": {"type": "string", "format": "date-time"},
+    "freshUntil": {"type": ["string", "null"], "format": "date-time"},
+    "freshness": {"enum": ["fresh", "stale", "unknown"]},
+    "source": {"type": "string", "minLength": 1},
+    "confidence": {"enum": ["exact", "verified", "providerReported", "inferred", "unknown"]},
+    "metadata": {"type": "object"}
+  },
+  "$defs": {
+    "provenance": {
+      "enum": ["PROVIDER_REPORTED", "LOCALLY_MEASURED", "INFERRED", "UNKNOWN"]
+    },
+    "reason": {
+      "enum": ["notReported", "notSupported", "permissionDenied", "stale", "offline", "unknown"]
+    },
+    "dimension": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "value", "provenance"],
+          "properties": {
+            "state": {"const": "known"},
+            "value": {"type": "string", "minLength": 1},
+            "provenance": {"enum": ["PROVIDER_REPORTED", "LOCALLY_MEASURED", "INFERRED"]}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "reason", "provenance"],
+          "properties": {
+            "state": {"const": "unavailable"},
+            "reason": {"$ref": "#/$defs/reason"},
+            "provenance": {"const": "UNKNOWN"}
+          }
+        }
+      ]
+    },
+    "metric": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "value", "unit", "provenance"],
+          "properties": {
+            "state": {"const": "known"},
+            "value": {"type": "number", "minimum": 0},
+            "unit": {"type": "string", "minLength": 1},
+            "provenance": {"enum": ["PROVIDER_REPORTED", "LOCALLY_MEASURED", "INFERRED"]}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "reason", "unit", "provenance"],
+          "properties": {
+            "state": {"const": "unavailable"},
+            "reason": {"$ref": "#/$defs/reason"},
+            "unit": {"type": "null"},
+            "provenance": {"const": "UNKNOWN"}
+          }
+        }
+      ]
+    },
+    "instant": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "value", "provenance"],
+          "properties": {
+            "state": {"const": "known"},
+            "value": {"type": "string", "format": "date-time"},
+            "provenance": {"enum": ["PROVIDER_REPORTED", "LOCALLY_MEASURED", "INFERRED"]}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "reason", "provenance"],
+          "properties": {
+            "state": {"const": "unavailable"},
+            "reason": {"$ref": "#/$defs/reason"},
+            "provenance": {"const": "UNKNOWN"}
+          }
+        }
+      ]
+    }
+  }
+}

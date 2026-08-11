@@ -14,6 +14,19 @@ def test_config_defaults_to_loopback_and_read_only(tmp_path: Path) -> None:
     assert config.loopback_only
     assert config.read_only_api
     assert not config.private_transport
+    assert config.worker_timeout_seconds == 120
+
+
+def test_worker_timeout_is_bounded_configurable_and_provider_neutral(tmp_path: Path) -> None:
+    configured = load_config(
+        data_dir=tmp_path,
+        environ={"PROJECT_SUPERVISOR_WORKER_TIMEOUT_SECONDS": "600"},
+    )
+    assert configured.worker_timeout_seconds == 600
+    with pytest.raises(ConfigurationError, match="between 1 and 3600"):
+        SupervisorConfig(data_dir=tmp_path, worker_timeout_seconds=0).validate()
+    with pytest.raises(ConfigurationError, match="between 1 and 3600"):
+        SupervisorConfig(data_dir=tmp_path, worker_timeout_seconds=3601).validate()
 
 
 def test_non_loopback_requires_private_transport_and_tls(tmp_path: Path) -> None:

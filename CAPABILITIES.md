@@ -4,25 +4,30 @@ Labels: **IMPLEMENTED** is code/contract tested; **HOST-VERIFIED** adds sanitize
 **FOUNDATION** is a documented or partial seam not yet an end-to-end feature; **PLANNED** has no
 stable implementation; **UNSUPPORTED** is deliberately excluded.
 
-| Capability | V0.1 state | Machine interface |
+| Capability | V0.2 beta state | Machine interface |
 |---|---|---|
 | SQLite canonical state, migrations, append-only events | IMPLEMENTED | Python/store, CLI |
 | Task state machine and deterministic scheduling | IMPLEMENTED | Python/domain/scheduler |
 | Local initialization/status/task/event inspection | IMPLEMENTED | `project-supervisor` CLI |
 | Scoped hashed observer tokens | IMPLEMENTED | CLI `token create` |
 | Read-only REST/WebSocket and OpenAPI | IMPLEMENTED | `/v1/*`, `/v1/stream`, `/openapi.json` |
-| Claude/Grok/AGY adapters | IMPLEMENTED; prior native host gates | adapter/runtime boundary |
+| Codex/Claude/Grok/AGY native adapters | IMPLEMENTED; deterministic process gates | adapter/runtime boundary |
+| Local Worker protocol v2 durable launch/reconcile | IMPLEMENTED; real SIGKILL acceptance | `/v2/launches`, durable registry |
+| Registered Local Worker driver runtime | IMPLEMENTED; production-like fake CLI acceptance | loopback daemon + server-owned profiles |
+| Codex Local Worker driver | IMPLEMENTED; offline production-path acceptance | registered `codex` profile |
 | Windows Local Worker over private HTTPS | HOST-VERIFIED in V0 evidence | Local Worker v1 adapter |
 | Mac→PC Tailscale transport | HOST-VERIFIED V0 topology | deployment config; not core dependency |
 | Cyber Office real REST/WebSocket observation | HOST-VERIFIED V0 topology | generic projections |
 | Portable discovery + deterministic dry-run plan | IMPLEMENTED FOUNDATION | `bootstrap/chips.py` |
 | Generated bootstrap review bundle | IMPLEMENTED FOUNDATION | `--emit --output-dir PATH` |
+| Restart-safe bootstrap lifecycle/audit recorder | IMPLEMENTED FOUNDATION | `--state-db`, `bootstrap-status`, result v1 contract |
 | macOS/Windows/Linux bootstrap discovery | IMPLEMENTED FOUNDATION | local read-only utilities |
 | Generic Worker/Node/transport semantics | IMPLEMENTED FOUNDATION | Python contracts + JSON schemas |
+| Fenced node-runtime recovery monitor | IMPLEMENTED control plane; deployment FOUNDATION | SQLite lease/checkpoint + typed adapter schema |
 | Capability-scoped Privilege Broker | FOUNDATION design only | none yet |
 | Automated identity enrollment/recovery | FOUNDATION design only | none yet |
-| Automated install/private transport/registration | PLANNED | plan marks approval required |
-| Zero-touch deployment | PLANNED; not demonstrated | none yet |
+| Automated install/private transport/registration | FOUNDATION; external executor absent | plan/result contracts keep approval required |
+| Zero-touch deployment | MATERIAL FOUNDATION; not demonstrated | durable lifecycle only |
 | Project_Bridge integration | separately audited foundation | integration report/document |
 | Public/ordinary-LAN Worker/model/admin exposure | UNSUPPORTED | rejected by policy |
 | Arbitrary remote shell or hidden persistence | UNSUPPORTED | none |
@@ -37,12 +42,27 @@ project-supervisor [--data-dir PATH] [--config PATH] [--json] logs [cursor/filte
 project-supervisor [--data-dir PATH] [--config PATH] [--json] token create [options]
 project-supervisor [--data-dir PATH] [--config PATH] [--json] project create [options]
 project-supervisor [--data-dir PATH] [--config PATH] [--json] task create [options]
+project-supervisor ... autonomous run|serve --local-worker-endpoint WORKER=URL \
+  --local-worker-driver WORKER=DRIVER_ID
 project-supervisor [--data-dir PATH] [--config PATH] serve [options]
-chips bootstrap [--json] [--emit --output-dir PATH]
-python3 bootstrap/chips.py bootstrap [--json] [--emit --output-dir PATH]
+chips bootstrap [--json] [--emit --output-dir PATH] [--state-db PATH --run-id ID]
+chips bootstrap-status --state-db PATH [--run-id ID] [--json]
+chips bootstrap-record-result --state-db PATH --result FILE [--json]
+python3 bootstrap/chips.py bootstrap [same options]
 ```
 
-Only `serve` starts Supervisor. Bootstrap remains dry-run even with `--emit`; emit only writes a
-review bundle. No command starts, installs, authenticates, exposes, or registers a provider Worker
+Only `serve` starts Supervisor. Bootstrap remains a host-operation dry-run even with `--emit` or a
+durable state database; those options write only review/lifecycle state. Recording a result never
+executes the referenced operation. No command starts, installs, authenticates, exposes, or registers
+a provider Worker
 implicitly. Token creation is the only listed command that emits a credential and stores only its
 salted hash.
+
+The bundled production Local Worker daemon is loopback-only and requires an owner-only 0600 bearer
+file. Its HTTP contract accepts a registered driver ID and bounded semantic inference request, never
+an executable, shell string, argv, environment, working directory, plugin, or arbitrary URL. Native
+driver profiles are operator-owned files loaded at daemon startup; the deterministic TestDriver and
+all test seams are rejected by `--production`.
+
+Codex availability means only that a reviewed executable profile is intact; authentication,
+subscription plan, quota, and provider-native resume remain unknown until the CLI reports them.

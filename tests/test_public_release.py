@@ -5,7 +5,9 @@ import hashlib
 import io
 import json
 import subprocess
+import sys
 import tarfile
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -18,6 +20,10 @@ def test_release_policy_excludes_private_v0_evidence_and_integration_harnesses()
     root = Path(__file__).resolve().parents[1]
     policy = ReleasePolicy.load(root / "release" / "public-release-files.json")
     assert not policy.includes("artifacts/goal-run/local-worker-remote-v0/REPORT.md")
+    assert not policy.includes("artifacts/any-future-release/evidence.json")
+    assert not policy.includes("CyberOffice/client/private-state.json")
+    assert not policy.includes("CyberIsland/world/private-state.json")
+    assert not policy.includes("ArtLab/render/private-state.json")
     assert not policy.includes("docs/CLAUDE_GOAL_HANDOFF.md")
     assert not policy.includes("scripts/run_remote_worker_gates.py")
     assert policy.includes("src/project_supervisor/domain.py")
@@ -116,15 +122,30 @@ def test_release_builder_is_byte_reproducible(tmp_path: Path) -> None:
         text=True,
     ).stdout.strip()
 
-    first = build_release(root, tmp_path / "first", epoch=1_700_000_000, revision=revision)
-    second = build_release(root, tmp_path / "second", epoch=1_700_000_000, revision=revision)
+    first = build_release(
+        root,
+        tmp_path / "first",
+        release_version="0.2.0-beta.1",
+        epoch=1_700_000_000,
+        revision=revision,
+    )
+    second = build_release(
+        root,
+        tmp_path / "second",
+        release_version="0.2.0-beta.1",
+        epoch=1_700_000_000,
+        revision=revision,
+    )
     assert first["archive"]["sha256"] == second["archive"]["sha256"]
+    assert first["release"] == "0.2.0-beta.1"
+    assert first["archive"]["path"] == "chips-agent-fabric-0.2.0-beta.1-source.tar.gz"
     archive = tmp_path / "first" / first["archive"]["path"]
     with (
         gzip.open(archive) as compressed,
         tarfile.open(fileobj=io.BytesIO(compressed.read()), mode="r:") as reader,
     ):
         names = reader.getnames()
+    assert all(name.startswith("chips-agent-fabric-0.2.0-beta.1/") for name in names)
     assert all("artifacts/private.txt" not in name for name in names)
     assert scan_archive(archive)["passed"] is True
 
@@ -167,14 +188,73 @@ def test_release_builder_uses_committed_blobs_and_refuses_existing_output(tmp_pa
     (root / "README.md").write_text("uncommitted private mutation\n", encoding="utf-8")
 
     output = tmp_path / "output"
-    manifest = build_release(root, output, epoch=1_700_000_000, revision=revision)
+    manifest = build_release(
+        root,
+        output,
+        release_version="0.2.0-beta.1",
+        epoch=1_700_000_000,
+        revision=revision,
+    )
     readme = next(item for item in manifest["files"] if item["path"] == "README.md")
     assert readme["sha256"] == hashlib.sha256(b"readme\n").hexdigest()
     with pytest.raises(ValueError, match="absent or empty"):
-        build_release(root, output, epoch=1_700_000_000, revision=revision)
+        build_release(
+            root,
+            output,
+            release_version="0.2.0-beta.1",
+            epoch=1_700_000_000,
+            revision=revision,
+        )
 
 
 @pytest.mark.parametrize("invalid", ["../secret", "/absolute", "artifacts/goal-run/x"])
 def test_release_policy_rejects_unsafe_or_excluded_paths(invalid: str) -> None:
     policy = ReleasePolicy(("artifacts/goal-run/",), frozenset())
     assert policy.includes(invalid) is False
+
+
+def test_release_policy_has_fail_closed_artifact_boundary() -> None:
+    policy = ReleasePolicy((), frozenset())
+    assert policy.includes("artifacts") is False
+    assert policy.includes("artifacts/unlisted/future-output.json") is False
+
+
+@pytest.mark.parametrize("private_root", ["ArtLab", "CyberIsland", "CyberOffice"])
+def test_release_policy_has_fail_closed_workspace_boundaries(private_root: str) -> None:
+    policy = ReleasePolicy((), frozenset())
+    assert policy.includes(private_root) is False
+    assert policy.includes(f"{private_root}/unlisted/private-output.json") is False
+
+
+def test_hatch_build_excludes_all_private_scope_roots() -> None:
+    root = Path(__file__).resolve().parents[1]
+    config = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    excluded = set(config["tool"]["hatch"]["build"]["exclude"])
+    assert {"/artifacts", "/ArtLab", "/CyberIsland", "/CyberOffice"} <= excluded
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    ["", "v0.2.0", "01.2.3", "0.2.0 beta.1", "../0.2.0", "0.2"],
+)
+def test_release_builder_rejects_missing_or_invalid_semver(tmp_path: Path, invalid: str) -> None:
+    root = Path(__file__).resolve().parents[1]
+    with pytest.raises(ValueError, match="explicit valid SemVer"):
+        build_release(root, tmp_path / "output", release_version=invalid)
+
+
+def test_release_cli_requires_explicit_version(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    completed = subprocess.run(
+        (
+            sys.executable,
+            str(root / "scripts" / "build_public_release.py"),
+            "--output-dir",
+            str(tmp_path / "output"),
+        ),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 2
+    assert "--release-version" in completed.stderr

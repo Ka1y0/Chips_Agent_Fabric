@@ -11,9 +11,12 @@ the others. See `docs/TRUST_MODEL.md` and `docs/CAPABILITY_MODEL.md`.
 ## Bootstrap and privileged operations
 
 The universal bootstrap FOUNDATION is read-only by default. `--emit` writes only non-secret review
-files to a new explicit directory and remains a dry-run. It never installs, logs in, connects to a
+files to a new explicit directory. An explicit `--state-db` may write only a durable SQLite
+plan/audit recorder. Both remain host-operation dry-runs: neither installs, logs in, connects to a
 Fabric, starts services, requests elevation, opens listeners, configures networking, creates identity
-keys, or registers Workers.
+keys, or registers Workers. Structured results record an external operation after the fact; they do
+not execute it, verify a real grant, or grant authority. Command/credential-shaped evidence and model
+self-approval are rejected.
 
 Future routine privilege must pass an authenticated Node Runtime and allowlisted Privilege Broker.
 Grants are explicit, least-privilege, task/target scoped, attributable, auditable, revocable, and
@@ -25,12 +28,18 @@ enrollment; “zero-touch” does not mean bypassing OS consent or security cont
 
 - Listen on loopback only (`127.0.0.1`).
 - Expose observation APIs read-only by default.
+- Keep Goal mutations disabled by default and require a separate `goal:control` bearer when enabled.
 - Require durable approval for RED actions.
 - Keep API tokens capability-scoped and salted-hash-only at rest.
 - Treat missing quota, usage, and cost as unavailable, never zero.
 - Forbid local-model workers from writing production code.
 - Use isolated working directories for worker processes.
 - Preserve append-only event history and explicit cancellation/timeout evidence.
+
+Autonomous planning does not broaden authority. Planned actions still pass the existing deterministic
+Hybrid Engine constraints, Worker capability/permission checks, RED approval rules, adapter safety
+policy, and local-model code-write prohibition. Evaluator, planner, or Worker prose cannot grant a
+capability or override a safety boundary. Token/cost limits with unobservable consumption fail closed.
 
 ## Remote access
 
@@ -45,6 +54,50 @@ Tailscale is the host-verified V0 private transport, not a permanent architectur
 Transport adapters must expose authenticated/encrypted peer identity, reachability, latency, and
 health semantics. WireGuard, Headscale, or native mTLS support requires separate implementation and
 verification; no fallback may expose an ordinary-LAN or public listener.
+
+### Bundled Local Worker v2 runtime
+
+The bundled daemon is deliberately loopback-only; its CLI rejects `0.0.0.0`, ordinary-LAN, and
+public binds. Test/development mode may use explicit single-user local trust. `--production` instead
+requires `--auth-token-file`: one daemon-owned, non-symlink, exact-0600 file containing a bounded
+URL-safe bearer. Constant-time middleware protects every v1/v2 health, launch, lookup, job, and
+cancel route, and the token never enters registry state or responses. This is still a single local
+authority, not an authenticated remote/multi-tenant design. A future remote deployment requires a
+separately verified client identity, rotation/revocation, scoped namespaces, and mTLS or approved
+overlay transport. Until then, remote mode is disabled rather than trusting a network location.
+
+Production execution is an allowlisted driver service, not a generic RCE endpoint. The wire schema
+rejects unknown fields and never accepts executable, shell, argv, environment, working directory,
+plugin/tool, credential, or arbitrary URL fields. Operator-owned profiles resolve an absolute
+regular executable, hash it, bind a revision/fingerprint into the launch identity, and are rechecked
+before spawn. Prompt input is carried only inside a bounded anonymous execution document; the
+durable registry stores its digest rather than its contents.
+
+The native process runtime uses no shell interpolation, strips ambient credential/proxy/module
+variables, fixes an isolated per-job working directory, bounds stdout/stderr/lines/events/diagnostic
+data, and treats malformed or missing terminal output as failure. POSIX cancellation terminates the
+owned process group with bounded force escalation. Windows Job Object containment and native driver
+cancellation are not verified and therefore must not be advertised as supported. Forced loss of the
+logical runner while a separately-sessioned provider CLI is alive remains an ambiguity that cannot
+authorize relaunch; OS-level containment is the next hardening step.
+
+Registered Local Worker Claude and Grok profiles use pinned provider contracts that force plan mode,
+an empty built-in-tool set, and provider-specific web/subagent/memory/customization denial flags.
+Unsupported flags fail before model execution. AGY uses its provider `sandbox`/`plan` mode. These
+controls do not replace OS containment, so profiles remain an explicit operator grant to run the
+installed CLI as a least-privilege daemon service account. The current Claude/Grok/AGY dialects
+place prompt text in process arguments, so secrets must not be placed in those prompts until a
+verified stdin or protected request-file dialect exists. Provider-created files, including AGY's
+diagnostic file, have bounded ingestion but no cross-platform filesystem quota yet.
+
+The Codex profile uses fixed `codex exec` arguments, never a shell; prompt input is anonymous stdin
+rather than argv. It forces read-only sandboxing, approval `never`, ephemeral execution, ignored user
+configuration, strict config parsing, no search/additional directories, a private bounded terminal
+file, and independent validation of requested JSON Schema. Codex exposes no reviewed equivalent of
+Claude/Grok's empty-tool mode, however. Therefore the authenticated daemon and a least-privilege
+service account remain part of the production authority boundary, and tasks must not assume that
+Codex read-only mode hides every file readable by that account. Provider credentials remain in the
+CLI-owned login store and are never read, copied, persisted, or projected by Supervisor.
 
 ### Windows Local Worker V0
 
@@ -70,6 +123,19 @@ timeout into a generic transport failure.
 The monitor API publishes the Local Worker harness as `lmStudio`. That value is a wire-compatibility
 alias for the Cyber Office `WorkerHarness` enum only; the supervisor never contacts an LM Studio
 endpoint.
+
+### Node runtime recovery V0.4
+
+The recovery monitor may probe only an explicit loopback HTTP(S) model endpoint and exposes no REST
+mutation route. A configured recovery policy is not a capability grant. A deployment must inject an
+external authorizer and a typed Node Runtime adapter that exposes only `runtime.start` and enforces
+generation fencing, deadline, and recovery-ID idempotency at the node-side trust boundary.
+
+Lease state prevents duplicate live Supervisor owners but does not authorize the side effect. The
+adapter request deliberately has no shell, executable, argv, environment, credential, firewall,
+listener, UAC, Defender, CORS, Funnel, MCP, or administrator field. A missing binding or authorization
+fails closed. Runtime recovery must never change the loopback-only LM Studio boundary or the private
+Worker transport merely to make a health gate pass.
 
 ## Secrets
 

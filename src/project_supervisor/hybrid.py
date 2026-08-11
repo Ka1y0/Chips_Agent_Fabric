@@ -8,6 +8,64 @@ from .domain import ExecutionTopology, TaskRequirements, WorkerSnapshot, utc_now
 
 
 @dataclass(frozen=True, slots=True)
+class ResourceRoutingEvidence:
+    """Frozen provider-neutral quota evidence used by one routing decision."""
+
+    worker_id: str
+    quota_pool_id: str
+    provider: str
+    quota_state: str
+    freshness: str
+    provenance: str
+    source: str
+    confidence: str
+    health_score: float
+    observed_at: datetime | None = None
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        required = (self.worker_id, self.quota_pool_id, self.provider, self.source, self.confidence)
+        if not all(value.strip() for value in required):
+            raise ValueError("resource routing evidence identifiers must not be empty")
+        if self.quota_state not in {"available", "warning", "critical", "exhausted", "unknown"}:
+            raise ValueError("unsupported quota state")
+        if self.freshness not in {"fresh", "stale", "unknown"}:
+            raise ValueError("unsupported resource evidence freshness")
+        if self.provenance not in {
+            "PROVIDER_REPORTED",
+            "LOCALLY_MEASURED",
+            "INFERRED",
+            "UNKNOWN",
+        }:
+            raise ValueError("unsupported resource evidence provenance")
+        if not 0 <= self.health_score <= 1:
+            raise ValueError("resource health_score must be between zero and one")
+        if self.observed_at is not None and self.observed_at.tzinfo is None:
+            raise ValueError("resource observed_at must be timezone-aware")
+        if self.quota_state == "unknown" and not self.reason:
+            raise ValueError("unknown resource evidence requires an explicit reason")
+
+    def to_protocol(self) -> dict[str, Any]:
+        return {
+            "workerID": self.worker_id,
+            "quotaPoolID": self.quota_pool_id,
+            "provider": self.provider,
+            "quotaState": self.quota_state,
+            "freshness": self.freshness,
+            "provenance": self.provenance,
+            "source": self.source,
+            "confidence": self.confidence,
+            "healthScore": self.health_score,
+            "observedAt": (
+                self.observed_at.isoformat().replace("+00:00", "Z")
+                if self.observed_at is not None
+                else None
+            ),
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class RoutingInputSnapshot:
     """Frozen, attributable input to one deterministic routing decision."""
 
@@ -18,6 +76,7 @@ class RoutingInputSnapshot:
     workers: tuple[WorkerSnapshot, ...]
     observed_at: datetime = field(default_factory=utc_now)
     facts: dict[str, str | int | float | bool] = field(default_factory=dict)
+    resource_evidence: tuple[ResourceRoutingEvidence, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.snapshot_id.strip() or not self.task_id.strip():
@@ -25,6 +84,11 @@ class RoutingInputSnapshot:
         worker_ids = [worker.id for worker in self.workers]
         if len(worker_ids) != len(set(worker_ids)):
             raise ValueError("routing snapshot workers must be unique")
+        evidence_ids = [item.worker_id for item in self.resource_evidence]
+        if len(evidence_ids) != len(set(evidence_ids)):
+            raise ValueError("routing resource evidence must be unique by Worker")
+        if not set(evidence_ids) <= set(worker_ids):
+            raise ValueError("routing resource evidence references an unknown Worker")
 
     def explanation(self) -> dict[str, Any]:
         return {
@@ -32,6 +96,10 @@ class RoutingInputSnapshot:
             "observedAt": self.observed_at.isoformat().replace("+00:00", "Z"),
             "workerIDs": sorted(worker.id for worker in self.workers),
             "facts": dict(sorted(self.facts.items())),
+            "resourceEvidence": [
+                item.to_protocol()
+                for item in sorted(self.resource_evidence, key=lambda value: value.worker_id)
+            ],
             "adaptiveLearning": False,
         }
 

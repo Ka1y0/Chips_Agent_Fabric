@@ -1,6 +1,6 @@
 # Configuration inventory
 
-Supervisor has three distinct configuration classes. They are intentionally not
+Project_Supervisor has three distinct configuration classes. They are intentionally not
 interchangeable.
 
 ## 1. Runtime configuration
@@ -18,7 +18,8 @@ Safe generated example:
   "private_transport": false,
   "read_only_api": true,
   "tls_certificate": null,
-  "tls_private_key": null
+  "tls_private_key": null,
+  "worker_timeout_seconds": 120.0
 }
 ```
 
@@ -34,12 +35,13 @@ credentials in this object.
 | `tls_private_key` | path or null | `PROJECT_SUPERVISOR_TLS_PRIVATE_KEY` | Must be paired with certificate and exist when validation is active |
 | `read_only_api` | boolean, `true` | `PROJECT_SUPERVISOR_READ_ONLY_API` | Safe V0 API posture |
 | `log_level` | enum, `INFO` | `PROJECT_SUPERVISOR_LOG_LEVEL` | `CRITICAL`, `ERROR`, `WARNING`, `INFO`, or `DEBUG` |
+| `worker_timeout_seconds` | number, `120` | `PROJECT_SUPERVISOR_WORKER_TIMEOUT_SECONDS` | Provider-neutral invocation bound, 1–3600 seconds; never unbounded |
 
 `PROJECT_SUPERVISOR_DATA_DIR` selects the state directory; it is not stored inside `config.json`.
 The CLI `--data-dir` option overrides that selection. `--config` selects an explicit runtime JSON
 file for read operations. Field-level environment variables override values from that JSON file.
 
-`.env.example` is documentation only. Supervisor does not auto-load `.env`; an operator who
+`.env.example` is documentation only. Project_Supervisor does not auto-load `.env`; an operator who
 chooses environment configuration must inject it through a trusted process/service manager.
 
 ## 2. Review and enrollment manifests
@@ -64,7 +66,7 @@ must retain `codeWriteAllowed: false`.
 ## 3. Provider and client authentication
 
 Provider authentication remains in each provider's official user-controlled credential store.
-Supervisor may invoke an already-authenticated CLI but must not copy, inspect, print, or
+Project_Supervisor may invoke an already-authenticated CLI but must not copy, inspect, print, or
 persist its OAuth token, cookie, API key, or Keychain value.
 
 Remote Local Worker configuration is split deliberately: the Tailscale HTTPS hostname is a normal

@@ -1,6 +1,6 @@
 # Quickstart
 
-Supervisor is local-first and starts with a loopback-only, read-only API configuration. The
+Project_Supervisor is local-first and starts with a loopback-only, read-only API configuration. The
 current V0 command surface initializes and inspects durable state; task dispatch is enabled only by
 the runtime components documented in `CAPABILITIES.md`.
 
@@ -59,7 +59,7 @@ client machine's OS credential manager. Never paste it into logs, chat, source f
 
 The default is `127.0.0.1:7330`. A non-loopback host is rejected unless configuration explicitly
 declares an authenticated private transport and supplies both a TLS certificate and private key.
-Supervisor does not provision that transport automatically.
+Project_Supervisor does not provision that transport automatically.
 
 For loopback development only, start the read-only API explicitly:
 

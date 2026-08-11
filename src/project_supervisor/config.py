@@ -65,6 +65,7 @@ class SupervisorConfig:
     tls_private_key: Path | None = None
     read_only_api: bool = True
     log_level: str = "INFO"
+    worker_timeout_seconds: float = 120.0
 
     @property
     def database_path(self) -> Path:
@@ -83,6 +84,8 @@ class SupervisorConfig:
             raise ConfigurationError("port must be between 1 and 65535")
         if self.log_level.upper() not in {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}:
             raise ConfigurationError("log_level must be CRITICAL, ERROR, WARNING, INFO, or DEBUG")
+        if not 1 <= self.worker_timeout_seconds <= 3600:
+            raise ConfigurationError("worker_timeout_seconds must be between 1 and 3600")
         if (self.tls_certificate is None) != (self.tls_private_key is None):
             raise ConfigurationError("TLS certificate and private key must be configured together")
         if not self.loopback_only:
@@ -140,6 +143,7 @@ def load_config(
         "tls_private_key",
         "read_only_api",
         "log_level",
+        "worker_timeout_seconds",
     }
     unknown = set(file_values) - allowed
     if unknown:
@@ -154,6 +158,7 @@ def load_config(
         "tls_private_key": file_values.get("tls_private_key"),
         "read_only_api": file_values.get("read_only_api", True),
         "log_level": file_values.get("log_level", "INFO"),
+        "worker_timeout_seconds": file_values.get("worker_timeout_seconds", 120.0),
     }
     environment_keys = {
         "host": "HOST",
@@ -163,6 +168,7 @@ def load_config(
         "tls_private_key": "TLS_PRIVATE_KEY",
         "read_only_api": "READ_ONLY_API",
         "log_level": "LOG_LEVEL",
+        "worker_timeout_seconds": "WORKER_TIMEOUT_SECONDS",
     }
     for field, suffix in environment_keys.items():
         environment_value = environment.get(f"{ENV_PREFIX}{suffix}")
@@ -173,6 +179,10 @@ def load_config(
         values["port"] = int(values["port"])
     except (TypeError, ValueError) as error:
         raise ConfigurationError("port must be an integer") from error
+    try:
+        values["worker_timeout_seconds"] = float(values["worker_timeout_seconds"])
+    except (TypeError, ValueError) as error:
+        raise ConfigurationError("worker_timeout_seconds must be numeric") from error
     for field in ("private_transport", "read_only_api"):
         values[field] = _boolean(values[field], name=field)
     for field in ("tls_certificate", "tls_private_key"):

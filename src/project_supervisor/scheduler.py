@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
 from .domain import (
@@ -16,7 +16,7 @@ from .domain import (
     WorkerSnapshot,
     WorkerState,
 )
-from .hybrid import RoutingInputSnapshot
+from .hybrid import ResourceRoutingEvidence, RoutingInputSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +49,7 @@ class SchedulerWeights:
 
 @dataclass(frozen=True, slots=True)
 class SchedulerConfig:
-    policy_version: str = "v0.1"
+    policy_version: str = "v0.4-resource-aware"
     weights: SchedulerWeights = field(default_factory=SchedulerWeights)
 
 
@@ -66,7 +66,9 @@ class DeterministicScheduler:
         requirements: TaskRequirements,
         topology: ExecutionTopology,
         workers: Iterable[WorkerSnapshot],
+        resource_evidence: Iterable[ResourceRoutingEvidence] = (),
     ) -> RoutingDecision:
+        evidence_by_worker = self._resource_evidence(resource_evidence)
         eligible: list[WorkerSnapshot] = []
         rejected: list[Rejection] = []
         for worker in sorted(workers, key=lambda item: item.id):
@@ -76,7 +78,10 @@ class DeterministicScheduler:
             else:
                 eligible.append(worker)
 
-        scores = [self._score(requirements, worker) for worker in eligible]
+        scores = [
+            self._score(requirements, worker, evidence_by_worker.get(worker.id))
+            for worker in eligible
+        ]
         score_by_id = {score.worker_id: score for score in scores}
         ranked = sorted(eligible, key=lambda worker: (-score_by_id[worker.id].score, worker.id))
         selected = self._select(topology, requirements, ranked, score_by_id)
@@ -116,6 +121,10 @@ class DeterministicScheduler:
                 {"workerID": item.worker_id, "reasonCode": item.reason_code, "detail": item.detail}
                 for item in rejected
             ],
+            "resourceEvidence": [
+                evidence.to_protocol()
+                for evidence in sorted(evidence_by_worker.values(), key=lambda item: item.worker_id)
+            ],
             "tieBreak": "workerID ascending after score",
         }
         return RoutingDecision(
@@ -135,6 +144,7 @@ class DeterministicScheduler:
             requirements=snapshot.requirements,
             topology=snapshot.topology,
             workers=snapshot.workers,
+            resource_evidence=snapshot.resource_evidence,
         )
         return RoutingDecision(
             topology=decision.topology,
@@ -144,6 +154,13 @@ class DeterministicScheduler:
             policy_version=decision.policy_version,
             explanation={**decision.explanation, "routingInput": snapshot.explanation()},
         )
+
+    def constraint_rejections(
+        self, requirements: TaskRequirements, worker: WorkerSnapshot
+    ) -> tuple[Rejection, ...]:
+        """Expose the deterministic hard-constraint phase to pre-routing policy overlays."""
+
+        return self._hard_constraints(requirements, worker)
 
     def _hard_constraints(
         self, requirements: TaskRequirements, worker: WorkerSnapshot
@@ -186,7 +203,12 @@ class DeterministicScheduler:
             reject("HUMAN_APPROVAL_REQUIRED", "RED task lacks a durable approved record")
         return tuple(reasons)
 
-    def _score(self, requirements: TaskRequirements, worker: WorkerSnapshot) -> CandidateScore:
+    def _score(
+        self,
+        requirements: TaskRequirements,
+        worker: WorkerSnapshot,
+        resource_evidence: ResourceRoutingEvidence | None = None,
+    ) -> CandidateScore:
         required = requirements.required_capabilities
         capability_fit = (
             1.0 if not required else len(required & worker.capabilities) / len(required)
@@ -201,11 +223,15 @@ class DeterministicScheduler:
             "capabilityFit": capability_fit,
             "expectedQuality": self._clamp(worker.quality_score),
             "availability": 1.0 if worker.state is WorkerState.IDLE else 0.0,
-            "quotaHealth": {
-                ResourceState.AVAILABLE: 1.0,
-                ResourceState.WARNING: 0.5,
-                ResourceState.UNKNOWN: 0.25,
-            }.get(worker.resource_state, 0.0),
+            "quotaHealth": (
+                resource_evidence.health_score
+                if resource_evidence is not None
+                else {
+                    ResourceState.AVAILABLE: 1.0,
+                    ResourceState.WARNING: 0.5,
+                    ResourceState.UNKNOWN: 0.25,
+                }.get(worker.resource_state, 0.0)
+            ),
             "monetaryCost": self._clamp(worker.monetary_cost_score),
             "latency": 1.0 / (1.0 + max(worker.expected_latency_seconds, 0.0) / 60.0),
             "historicalReliability": self._clamp(worker.reliability_score),
@@ -219,6 +245,17 @@ class DeterministicScheduler:
         denominator = sum(weights.values())
         score = sum(components[key] * weights[key] for key in components) / denominator
         return CandidateScore(worker_id=worker.id, score=round(score, 9), components=components)
+
+    @staticmethod
+    def _resource_evidence(
+        values: Iterable[ResourceRoutingEvidence],
+    ) -> Mapping[str, ResourceRoutingEvidence]:
+        result: dict[str, ResourceRoutingEvidence] = {}
+        for value in values:
+            if value.worker_id in result:
+                raise ValueError("resource routing evidence must be unique by Worker")
+            result[value.worker_id] = value
+        return result
 
     @staticmethod
     def _select(

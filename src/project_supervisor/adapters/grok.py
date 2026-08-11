@@ -4,7 +4,13 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .base import Usage, WorkerRequest
+from .base import (
+    UnsafeWorkerRequest,
+    Usage,
+    WorkerProtocolError,
+    WorkerRequest,
+    request_requires_code_write,
+)
 from .claude import _float_value, _int_value
 from .native import NativeSubprocessAdapter, ParsedOutput, redact
 
@@ -27,11 +33,28 @@ def _grok_usage(mapping: Mapping[str, Any], *, cost: float | None = None) -> Usa
 class GrokAdapter(NativeSubprocessAdapter):
     """Adapter for Grok Build's verified ``streaming-json`` interface."""
 
-    def __init__(self, executable: str = "grok", **kwargs: Any) -> None:
+    def __init__(self, executable: str = "grok", *, read_only: bool = False, **kwargs: Any) -> None:
         super().__init__(executable, **kwargs)
+        self.read_only = read_only
 
     def command_arguments(self, request: WorkerRequest) -> Sequence[str]:
+        if self.read_only and request_requires_code_write(request):
+            raise UnsafeWorkerRequest("read-only Grok profile denied code-write authority")
         arguments = ["-p", request.prompt, "--output-format", "streaming-json"]
+        if self.read_only:
+            # This pinned Grok CLI contract removes all built-in tools and disables provider web,
+            # subagent, and memory surfaces.  Unsupported flags fail before any model execution.
+            arguments.extend(
+                (
+                    "--permission-mode",
+                    "plan",
+                    "--tools",
+                    "",
+                    "--disable-web-search",
+                    "--no-subagents",
+                    "--no-memory",
+                )
+            )
         if request.session_id:
             arguments.extend(("--session-id", request.session_id, "--resume"))
         if request.model:
@@ -44,7 +67,9 @@ class GrokAdapter(NativeSubprocessAdapter):
         event = json.loads(line)
         if not isinstance(event, dict):
             raise TypeError("Grok event must be a JSON object")
-        event_type = str(event.get("type", "unknown"))
+        event_type = event.get("type")
+        if not isinstance(event_type, str) or not event_type:
+            raise TypeError("Grok event type must be a non-empty string")
         parsed.provider_event_types.add(event_type)
         session_id = event.get("sessionId") or event.get("session_id")
         if isinstance(session_id, str):
@@ -52,10 +77,12 @@ class GrokAdapter(NativeSubprocessAdapter):
 
         if event_type == "text":
             fragment = event.get("data")
-            if isinstance(fragment, str):
-                parsed.text_fragments.append(fragment)
+            if not isinstance(fragment, str):
+                raise TypeError("Grok text event must contain string data")
+            parsed.text_fragments.append(fragment)
 
         if event_type in {"result", "end", "completed"}:
+            parsed.terminal_event_count += 1
             for key in ("result", "text", "output", "response"):
                 value = event.get(key)
                 if isinstance(value, str):
@@ -105,3 +132,15 @@ class GrokAdapter(NativeSubprocessAdapter):
             "sessionId": parsed.session_id,
             "model": parsed.model,
         }
+
+    def validate_output(
+        self,
+        request: WorkerRequest,
+        parsed: ParsedOutput,
+        stdout: str,
+        stderr: str,
+    ) -> None:
+        if parsed.terminal_event_count != 1:
+            raise WorkerProtocolError("Grok output requires exactly one terminal event")
+        if not parsed.final_text or not parsed.final_text.strip():
+            raise WorkerProtocolError("Grok terminal output is empty")

@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chips-agent-fabric.invalid/schemas/invocation-telemetry-v1.schema.json",
+  "title": "CHIPS Agent Fabric Invocation Telemetry v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id", "goalID", "taskID", "runID", "workerID", "provider", "model", "nodeID",
+    "taskRole", "outcome", "duration", "inputTokens", "outputTokens", "cacheReadTokens",
+    "cacheWriteTokens", "cost", "remainingQuota", "retryCount", "fallback", "executorKind",
+    "qualityScore", "recordedAt"
+  ],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "goalID": {"type": ["string", "null"], "minLength": 1},
+    "taskID": {"type": "string", "minLength": 1},
+    "runID": {"type": "string", "minLength": 1},
+    "workerID": {"type": "string", "minLength": 1},
+    "provider": {"type": "string", "minLength": 1},
+    "model": {"$ref": "#/$defs/dimension"},
+    "nodeID": {"type": "string", "minLength": 1},
+    "taskRole": {
+      "enum": [
+        "primary", "reviewer", "panelist", "router", "verifier", "planner", "evaluator",
+        "fallback", "other", "unknown"
+      ]
+    },
+    "outcome": {
+      "enum": [
+        "success", "failure", "cancelled", "timedOut", "interrupted", "authRequired",
+        "rateLimited"
+      ]
+    },
+    "duration": {"$ref": "#/$defs/metric"},
+    "inputTokens": {"$ref": "#/$defs/metric"},
+    "outputTokens": {"$ref": "#/$defs/metric"},
+    "cacheReadTokens": {"$ref": "#/$defs/metric"},
+    "cacheWriteTokens": {"$ref": "#/$defs/metric"},
+    "cost": {"$ref": "#/$defs/metric"},
+    "remainingQuota": {"$ref": "#/$defs/metric"},
+    "retryCount": {"type": "integer", "minimum": 0},
+    "fallback": {"type": "boolean"},
+    "executorKind": {"enum": ["codex", "offloaded", "unknown"]},
+    "qualityScore": {"$ref": "#/$defs/metric"},
+    "recordedAt": {"type": "string", "format": "date-time"}
+  },
+  "$defs": {
+    "confidence": {
+      "enum": ["exact", "verified", "providerReported", "inferred", "unknown"]
+    },
+    "unavailableReason": {
+      "enum": ["notReported", "notSupported", "permissionDenied", "stale", "offline", "unknown"]
+    },
+    "dimension": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "value"],
+          "properties": {
+            "state": {"const": "known"},
+            "value": {"type": "string", "minLength": 1}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "reason"],
+          "properties": {
+            "state": {"const": "unavailable"},
+            "reason": {"$ref": "#/$defs/unavailableReason"}
+          }
+        }
+      ]
+    },
+    "metric": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "value", "confidence", "unit"],
+          "properties": {
+            "state": {"const": "known"},
+            "value": {"type": "number", "minimum": 0},
+            "confidence": {
+              "enum": ["exact", "verified", "providerReported", "inferred"]
+            },
+            "unit": {"type": "string", "minLength": 1}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "reason", "confidence", "unit"],
+          "properties": {
+            "state": {"const": "unavailable"},
+            "reason": {"$ref": "#/$defs/unavailableReason"},
+            "confidence": {"const": "unknown"},
+            "unit": {"type": "null"}
+          }
+        }
+      ]
+    }
+  }
+}

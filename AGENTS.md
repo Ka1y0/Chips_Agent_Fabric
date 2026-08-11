@@ -17,6 +17,10 @@ it never replaces canonical structured state. Do not call Cyber Office a “Supe
    [`docs/BOOTSTRAP_PROTOCOL.md`](docs/BOOTSTRAP_PROTOCOL.md) — inspect or bootstrap a machine.
 7. [`docs/LLM_OPERATIONS.md`](docs/LLM_OPERATIONS.md), [`docs/RECOVERY.md`](docs/RECOVERY.md), and
    [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) — operate, recover, and diagnose.
+8. [`docs/AUTONOMOUS_ITERATION.md`](docs/AUTONOMOUS_ITERATION.md) — persisted Goal loops,
+   human controls, guards, and restart semantics.
+9. [`docs/AUTONOMOUS_HOST.md`](docs/AUTONOMOUS_HOST.md) — production Goal hosting, exact operator
+   commands, lease ownership, resource audits, and process-lifetime requirements.
 
 Documentation uses these maturity labels: **IMPLEMENTED**, **FOUNDATION**, **PLANNED**, and
 **UNSUPPORTED**. A design document is not proof of deployment. Check code, tests, and sanitized

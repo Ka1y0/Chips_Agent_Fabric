@@ -19,8 +19,10 @@ from typing import Any
 
 try:
     from .check_environment import inspect
+    from .lifecycle import BootstrapLifecycleStore, BootstrapStepResult
 except ImportError:  # Direct ``python bootstrap/chips.py`` execution.
     from check_environment import inspect
+    from lifecycle import BootstrapLifecycleStore, BootstrapStepResult
 
 
 def build_plan(profile: dict[str, Any]) -> dict[str, Any]:
@@ -33,42 +35,77 @@ def build_plan(profile: dict[str, Any]) -> dict[str, Any]:
     steps: list[dict[str, Any]] = [
         {
             "id": "validate-platform",
+            "phase": "DISCOVER",
             "action": "validate",
             "status": "ready" if supported else "blocked",
             "reason": "supported foundation platform"
             if supported
             else "unsupported operating system",
             "mutating": False,
+            "dependsOn": [],
+            "requiredCapability": None,
         },
         {
             "id": "review-existing-state",
+            "phase": "REVIEW",
             "action": "review",
             "status": "required" if fabric["existingStateDatabase"] else "notNeeded",
             "reason": "existing canonical state must never be overwritten"
             if fabric["existingStateDatabase"]
             else "no existing state database discovered",
             "mutating": False,
+            "dependsOn": ["validate-platform"],
+            "requiredCapability": None,
         },
         {
             "id": "install-supervisor",
+            "phase": "PREPARE",
             "action": "package.install",
             "status": "notNeeded" if fabric["supervisorExecutable"] else "approvalRequired",
             "reason": "Supervisor executable discovered"
             if fabric["supervisorExecutable"]
             else "installation is outside bootstrap FOUNDATION",
             "mutating": True,
+            "dependsOn": ["review-existing-state"],
+            "requiredCapability": "package.install",
+        },
+        {
+            "id": "review-node-identity",
+            "phase": "TRUST",
+            "action": "identity.review",
+            "status": "required" if fabric["identityPresent"] else "notNeeded",
+            "reason": "existing identity metadata requires trust-root validation"
+            if fabric["identityPresent"]
+            else "no existing identity metadata discovered",
+            "mutating": False,
+            "dependsOn": ["review-existing-state"],
+            "requiredCapability": None,
         },
         {
             "id": "establish-node-identity",
+            "phase": "TRUST",
             "action": "identity.enroll",
             "status": "notNeeded" if fabric["identityPresent"] else "approvalRequired",
             "reason": "existing identity metadata discovered"
             if fabric["identityPresent"]
             else "trust-root enrollment is not automated by this foundation",
             "mutating": True,
+            "dependsOn": ["install-supervisor", "review-node-identity"],
+            "requiredCapability": "identity.enroll",
+        },
+        {
+            "id": "verify-node-trust",
+            "phase": "TRUST",
+            "action": "trust.verify",
+            "status": "blocked",
+            "reason": "requires approved identity enrollment and public identity evidence",
+            "mutating": False,
+            "dependsOn": ["review-node-identity", "establish-node-identity"],
+            "requiredCapability": None,
         },
         {
             "id": "configure-private-transport",
+            "phase": "CONFIGURE",
             "action": "network.private.configure",
             "status": "approvalRequired",
             "reason": (
@@ -76,15 +113,30 @@ def build_plan(profile: dict[str, Any]) -> dict[str, Any]:
                 "authenticated reachability was not tested"
             ),
             "mutating": True,
+            "dependsOn": ["verify-node-trust"],
+            "requiredCapability": "network.private.configure",
+        },
+        {
+            "id": "verify-private-transport",
+            "phase": "VERIFY",
+            "action": "network.private.verify",
+            "status": "blocked",
+            "reason": ("requires authenticated, encrypted peer identity and exposure evidence"),
+            "mutating": False,
+            "dependsOn": ["configure-private-transport"],
+            "requiredCapability": None,
         },
         {
             "id": "register-workers",
+            "phase": "ENROLL",
             "action": "worker.register",
             "status": "approvalRequired",
             "reason": (
                 "discovered executables and model servers are candidates, not verified workers"
             ),
             "mutating": True,
+            "dependsOn": ["verify-private-transport"],
+            "requiredCapability": "worker.register",
             "candidates": {
                 "aiCLIs": sorted(name for name, path in resources["aiCLIs"].items() if path),
                 "modelServers": sorted(
@@ -93,18 +145,41 @@ def build_plan(profile: dict[str, Any]) -> dict[str, Any]:
             },
         },
         {
+            "id": "verify-worker-contracts",
+            "phase": "VERIFY",
+            "action": "worker.verify",
+            "status": "blocked",
+            "reason": "requires real health, execute, stream, cancel, and timeout evidence",
+            "mutating": False,
+            "dependsOn": ["register-workers"],
+            "requiredCapability": None,
+        },
+        {
             "id": "run-acceptance",
+            "phase": "VERIFY",
             "action": "acceptance.run",
             "status": "blocked",
             "reason": (
                 "requires reviewed installation, identity, transport, and worker configuration"
             ),
             "mutating": False,
+            "dependsOn": ["verify-worker-contracts"],
+            "requiredCapability": None,
+        },
+        {
+            "id": "commit-enrollment",
+            "phase": "COMMIT",
+            "action": "fabric.enrollment.commit",
+            "status": "approvalRequired",
+            "reason": "canonical node registration requires attributable enrollment authority",
+            "mutating": True,
+            "dependsOn": ["run-acceptance"],
+            "requiredCapability": "fabric.enrollment.commit",
         },
     ]
     return {
-        "schemaVersion": 1,
-        "milestone": "universal-bootstrap-foundation",
+        "schemaVersion": 2,
+        "milestone": "universal-bootstrap-lifecycle-foundation",
         "mode": "dryRun",
         "supportedPlatform": supported,
         "failClosed": True,
@@ -175,6 +250,7 @@ def emit_bundle(output_dir: Path, profile: dict[str, Any], plan: dict[str, Any])
         "tls_private_key": None,
         "read_only_api": True,
         "log_level": "INFO",
+        "worker_timeout_seconds": 120.0,
     }
     files = {
         "machine-profile.json": profile,
@@ -216,7 +292,62 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="replace hostnames and local paths for shareable output",
     )
+    bootstrap.add_argument(
+        "--state-db",
+        type=Path,
+        help=(
+            "explicit private SQLite path for a resumable bootstrap run; "
+            "records state only and performs no host operation"
+        ),
+    )
+    bootstrap.add_argument(
+        "--run-id",
+        default="bootstrap-default",
+        help="stable machine-local run identity used with --state-db",
+    )
+    status = subparsers.add_parser(
+        "bootstrap-status", help="inspect one durable bootstrap run without changing it"
+    )
+    status.add_argument("--state-db", type=Path, required=True)
+    status.add_argument("--run-id", default="bootstrap-default")
+    status.add_argument("--json", action="store_true")
+    record = subparsers.add_parser(
+        "bootstrap-record-result",
+        help="record a bounded external step result; never executes the operation",
+    )
+    record.add_argument("--state-db", type=Path, required=True)
+    record.add_argument("--result", type=Path, required=True)
+    record.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    if args.command == "bootstrap-status":
+        try:
+            run = BootstrapLifecycleStore(args.state_db).get_run(args.run_id)
+        except (KeyError, OSError, ValueError) as error:
+            print(f"bootstrap status refused: {error}", file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(run, indent=2, sort_keys=True))
+        else:
+            print(f"Bootstrap run {run['runID']}: {run['state']} ({run['currentPhase']})")
+        return 0
+    if args.command == "bootstrap-record-result":
+        try:
+            raw = args.result.read_bytes()
+            if len(raw) > 32 * 1024:
+                raise ValueError("result file exceeds 32 KiB")
+            payload = json.loads(raw)
+            if not isinstance(payload, dict):
+                raise ValueError("result document must be a JSON object")
+            result = BootstrapStepResult.from_protocol(payload)
+            run = BootstrapLifecycleStore(args.state_db).record_result(result)
+        except (KeyError, OSError, ValueError, json.JSONDecodeError) as error:
+            print(f"bootstrap result refused: {type(error).__name__}", file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(run, indent=2, sort_keys=True))
+        else:
+            print(f"Bootstrap run {run['runID']}: {run['state']} ({run['currentPhase']})")
+        return 0
     if args.emit != bool(args.output_dir):
         parser.error("--emit and --output-dir must be supplied together")
     profile = inspect()
@@ -229,12 +360,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         "profile": output_profile,
         "plan": plan,
         "filesWritten": [],
+        "durableRun": None,
     }
     if args.emit:
         try:
             output["filesWritten"] = emit_bundle(args.output_dir, output_profile, plan)
         except (OSError, ValueError) as error:
             print(f"bootstrap refused: {error}", file=sys.stderr)
+            return 2
+    if args.state_db:
+        try:
+            output["durableRun"] = BootstrapLifecycleStore(args.state_db).initialize_run(
+                run_id=args.run_id,
+                profile=output_profile,
+                plan=plan,
+            )
+        except (OSError, ValueError) as error:
+            print(f"bootstrap state refused: {error}", file=sys.stderr)
             return 2
     if args.json:
         print(json.dumps(output, indent=2, sort_keys=True))
@@ -244,6 +386,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("Mode: dry-run; no install, login, network access, service start, or elevation")
         if output["filesWritten"]:
             print(f"Generated review bundle: {args.output_dir}")
+        if output["durableRun"]:
+            print(f"Durable run: {output['durableRun']['runID']} ({output['durableRun']['state']})")
     return 0 if plan["supportedPlatform"] else 3
 
 

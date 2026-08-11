@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chips-agent-fabric.invalid/schemas/autonomy-decision-v1.schema.json",
+  "title": "CHIPS Agent Fabric Autonomous Decision v1",
+  "oneOf": [
+    {"$ref": "#/$defs/evaluation"},
+    {"$ref": "#/$defs/plan"},
+    {"$ref": "#/$defs/verification"}
+  ],
+  "$defs": {
+    "binding": {
+      "type": "object",
+      "required": ["schemaVersion", "decisionType", "goalID", "iterationSequence", "steerVersion"],
+      "properties": {
+        "schemaVersion": {"const": "autonomy-decision/v1"},
+        "decisionType": {"enum": ["evaluation", "plan", "verification"]},
+        "goalID": {"type": "string", "minLength": 1, "maxLength": 200},
+        "iterationSequence": {"type": "integer", "minimum": 1},
+        "steerVersion": {"type": "integer", "minimum": 0}
+      }
+    },
+    "evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "decisionType", "goalID", "iterationSequence", "steerVersion",
+        "disposition", "summary", "progressFingerprint", "terminationReason", "facts"
+      ],
+      "properties": {
+        "schemaVersion": {"const": "autonomy-decision/v1"},
+        "decisionType": {"const": "evaluation"},
+        "goalID": {"type": "string", "minLength": 1, "maxLength": 200},
+        "iterationSequence": {"type": "integer", "minimum": 1},
+        "steerVersion": {"type": "integer", "minimum": 0},
+        "disposition": {"enum": ["incomplete", "satisfied", "terminate"]},
+        "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+        "progressFingerprint": {"type": "string", "minLength": 1, "maxLength": 256},
+        "terminationReason": {
+          "enum": [
+            null, "BLOCKED", "NO_PROGRESS", "ITERATION_LIMIT", "BUDGET_LIMIT",
+            "REPEATED_FAILURE", "SAFETY_BOUNDARY", "PERMISSION_REQUIRED", "HUMAN_ESCALATION",
+            "USER_STOPPED"
+          ]
+        },
+        "facts": {"type": "object"}
+      }
+    },
+    "actionPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "topology": {"enum": ["single", "primaryReviewer", "parallelPanel", "cheapFirstEscalation", "fallback"]},
+        "priority": {"type": "integer", "minimum": 0, "maximum": 100},
+        "permissionClass": {"enum": ["green", "yellow", "red"]},
+        "labels": {
+          "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true,
+          "items": {"enum": ["coding", "architecture", "research", "fastRouting", "rag", "review", "creative", "longContext", "privacySensitive", "highUncertainty"]}
+        },
+        "requiredCapabilities": {"type": "array", "maxItems": 16, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 200}},
+        "minimumContextTokens": {"type": ["integer", "null"], "minimum": 1},
+        "privacySensitive": {"type": "boolean"},
+        "codeWriteRequired": {"type": "boolean"},
+        "panelSize": {"type": "integer", "minimum": 1, "maximum": 8},
+        "preferredWorkers": {"type": "array", "maxItems": 16, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 200}}
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "title", "description", "role", "payload"],
+      "properties": {
+        "key": {"type": "string", "minLength": 1, "maxLength": 120, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"},
+        "title": {"type": "string", "minLength": 1, "maxLength": 300},
+        "description": {"type": "string", "minLength": 1, "maxLength": 12000},
+        "role": {"enum": ["primary", "reviewer", "panelist", "router", "verifier", "planner", "fallback", "other"]},
+        "payload": {"$ref": "#/$defs/actionPayload"}
+      }
+    },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "decisionType", "goalID", "iterationSequence", "steerVersion", "summary", "rationale", "actions"],
+      "properties": {
+        "schemaVersion": {"const": "autonomy-decision/v1"},
+        "decisionType": {"const": "plan"},
+        "goalID": {"type": "string", "minLength": 1, "maxLength": 200},
+        "iterationSequence": {"type": "integer", "minimum": 1},
+        "steerVersion": {"type": "integer", "minimum": 0},
+        "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+        "rationale": {"type": "string", "maxLength": 8000},
+        "actions": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"$ref": "#/$defs/action"}}
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "decisionType", "goalID", "iterationSequence", "steerVersion",
+        "satisfied", "summary", "progressFingerprint", "terminationReason", "evidence"
+      ],
+      "properties": {
+        "schemaVersion": {"const": "autonomy-decision/v1"},
+        "decisionType": {"const": "verification"},
+        "goalID": {"type": "string", "minLength": 1, "maxLength": 200},
+        "iterationSequence": {"type": "integer", "minimum": 1},
+        "steerVersion": {"type": "integer", "minimum": 0},
+        "satisfied": {"type": "boolean"},
+        "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+        "progressFingerprint": {"type": "string", "minLength": 1, "maxLength": 256},
+        "terminationReason": {
+          "enum": [
+            null, "SUCCESS", "BLOCKED", "NO_PROGRESS", "ITERATION_LIMIT", "BUDGET_LIMIT",
+            "REPEATED_FAILURE", "SAFETY_BOUNDARY", "PERMISSION_REQUIRED", "HUMAN_ESCALATION",
+            "USER_STOPPED"
+          ]
+        },
+        "evidence": {"type": "object"}
+      }
+    }
+  }
+}

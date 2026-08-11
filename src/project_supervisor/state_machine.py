@@ -52,7 +52,13 @@ TASK_TRANSITIONS = TransitionTable(
             }
         ),
         TaskState.REVIEWING: frozenset(
-            {TaskState.READY, TaskState.SUCCEEDED, TaskState.FAILED, TaskState.BLOCKED}
+            {
+                TaskState.READY,
+                TaskState.SUCCEEDED,
+                TaskState.FAILED,
+                TaskState.BLOCKED,
+                TaskState.CANCELLED,
+            }
         ),
         TaskState.BLOCKED: frozenset({TaskState.READY, TaskState.CANCELLED, TaskState.FAILED}),
         TaskState.INTERRUPTED: frozenset({TaskState.READY, TaskState.FAILED, TaskState.CANCELLED}),

@@ -1,13 +1,13 @@
 # CHIPS Agent Fabric goal progress
 
-Updated: 2026-08-09
+Updated: 2026-08-11
 
 ## Preserved V0 baseline
 
-The frozen V0 baseline demonstrated a macOS control node, authenticated encrypted private HTTPS, a
-loopback-only Windows Local Worker and local GPU runtime, Supervisor persistence, and Cyber Office
-REST/WebSocket observation. Private commit identifiers, node names, addresses, hardware identifiers,
-screenshots, raw logs, credentials, and Git history are excluded from public source.
+The frozen V0 baseline is commit `9bef90e`. Its real private path used a macOS control node,
+authenticated encrypted private HTTPS, a loopback-only Windows Local Worker and local GPU runtime,
+Supervisor persistence, and Cyber Office REST/WebSocket observation. Private node names, addresses,
+hardware identifiers, screenshots, raw logs, and credentials are excluded from public source.
 
 ```text
 PRIVATE_FABRIC_TRANSPORT           = PASS
@@ -38,6 +38,23 @@ public listener, Funnel, ordinary-LAN Worker/model exposure, raw MCP, or shell e
 - Apache-2.0 project metadata, provenance notices, deterministic commit-bound source archive,
   hardened archive/privacy auditing, and standard sdist exclusions.
 
+## V0.2 beta implemented foundations
+
+- Durable autonomous evaluate, plan, dispatch, verify, and continue operation with dependency-aware
+  scheduling, bounded retry/no-progress/time guards, and structured human escalation.
+- Generation-fenced execution leases, durable provider-job identities, deterministic reconciliation,
+  exactly-once canonical result ingestion, and restart-safe task lifecycle recovery.
+- Durable Pause, Resume, Steer, Stop, cancellation fences, task/version-scoped verification
+  criteria, and secure semantic API projections.
+- Local Worker Protocol V2: authenticated production profiles, durable server-side launch registry,
+  request-digest conflict protection, acceptance/pre-launch rejection receipts, idempotency lookup,
+  process identity stronger than PID alone, and real daemon/process restart acceptance.
+- Registered bounded native CLI paths for Codex, Claude Code, Grok, and Google AGY. Provider dialect
+  and production-runner tests use deterministic fake executables and consume no live model quota.
+- Atomic migration/startup locking, stale-owner recovery, resource-aware routing, and strengthened
+  bootstrap lifecycle/recovery foundations.
+- Explicit SemVer source-release labels and a fail-closed exclusion for all generated `artifacts/`.
+
 ## Honest maturity limits
 
 - Zero-touch installation, trust-root enrollment, Privilege Broker execution, service installation,
@@ -55,10 +72,23 @@ public listener, Funnel, ordinary-LAN Worker/model exposure, raw MCP, or shell e
   not been demonstrated.
 - The source archive is reproducible. The full dependency environment is not lockfile-reproducible
   yet; dependency ranges and observed versions remain explicit.
+- Windows Job Object containment and full reconstruction solely from the event journal remain
+  future work.
+- Local Worker V2 provides exactly-once logical launch only within one healthy durable authority.
+  Universal exactly-once provider side effects are not claimed.
+- Provider CLIs without native resume/reconnect/idempotency support remain explicitly unsupported
+  for those capabilities; Supervisor recovery fails closed rather than inventing support.
+- Advanced cross-machine recovery requires operator policy when provider state is ambiguous or an
+  authority is unreachable.
 
-## Release boundary
+## V0.2 beta release boundary
 
-The `v0.1.0-alpha.1` public seed is created from the audited clean archive in an isolated repository
-with a new root commit. The private development history and private V0 evidence are not publication
-inputs. Publication exposes source code only: it does not expose or alter any private Fabric runtime,
-service, credential, transport, or node.
+The selected package version is `0.2.0b1`; the selected prerelease tag is `v0.2.0-beta.1`, provided
+the tag is still unused. The release goal authorizes a normal fast-forward GitHub update, annotated
+tag, and prerelease only after all current gates pass. It does not authorize force push, history
+rewrite, repository visibility changes, or mutation of historical V0.1.
+
+The public source builder requires an explicit SemVer release label, reads immutable blobs from the
+selected Git revision, and excludes all `artifacts/` paths by both policy and a code-level boundary.
+Private V0 topology and evidence remain local. Package/release publication never implies deployment,
+provider login, live quota consumption, node enrollment, network exposure, or authority expansion.

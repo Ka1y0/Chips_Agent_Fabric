@@ -2,9 +2,11 @@
 
 ## Status
 
-V0.1 implements a portable **FOUNDATION**: read-only discovery, a deterministic fail-closed plan,
-and review-bundle emission. Automated installation, identity enrollment, private-transport setup,
-service installation, Worker registration, restart recovery, and fleet joining are not yet complete.
+V0.4 implements a portable **FOUNDATION**: read-only discovery, a deterministic fail-closed plan,
+review-bundle emission, and an optional durable SQLite lifecycle recorder. The recorder survives
+restart, is idempotent for identical evidence, and maintains a hash-chained append-only audit.
+Automated installation, cryptographic identity enrollment, private-transport setup, service
+installation, Worker registration, and fleet joining are not yet complete.
 
 ## Inspect
 
@@ -35,10 +37,47 @@ Use a directory outside the distributable clone where practical. The command ref
 directory and emits no credential fields. `supervisor-config.example.json` stays loopback-only and
 read-only. It is a candidate, not automatically activated runtime configuration.
 
+## Durable lifecycle foundation
+
+Choose an explicit private path to persist one resumable bootstrap run. This writes lifecycle state
+only and still performs no host operation:
+
+```sh
+chips bootstrap \
+  --state-db /private/operator/path/bootstrap.sqlite3 \
+  --run-id bootstrap-default \
+  --json
+
+chips bootstrap-status \
+  --state-db /private/operator/path/bootstrap.sqlite3 \
+  --run-id bootstrap-default \
+  --json
+```
+
+Re-running with the same run ID and identical discovery/plan evidence is idempotent. Changed
+evidence fails closed rather than silently replanning an active enrollment. Every mutating step
+remains `awaitingApproval` until an external legitimate trust root or future Privilege Broker has
+both authorized and performed its typed operation. Only then may a bounded non-secret result be
+recorded:
+
+```sh
+chips bootstrap-record-result \
+  --state-db /private/operator/path/bootstrap.sqlite3 \
+  --result /private/operator/path/step-result.json \
+  --json
+```
+
+The input must satisfy `schemas/bootstrap-step-result-v1.schema.json`. Command/shell/argv and
+credential-shaped fields, model self-approval, mismatched capabilities, out-of-order steps, and
+conflicting idempotency keys are rejected. An authorization reference is audit metadata—not a grant
+verifier and never permission to execute. `auditChainValid` reports recorder integrity; it does not
+prove the external operation was safe or successful.
+
 ## Interpret the plan
 
-Statuses are `ready`, `notNeeded`, `required`, `approvalRequired`, or `blocked`. Mutating steps are
-never automatic. Discovery paths can be machine-specific because they live in generated state; no
+Plan statuses are `ready`, `notNeeded`, `required`, `approvalRequired`, or `blocked`; durable step
+states distinguish pending, ready, review, approval, satisfied, failed, and blocked. Mutating steps
+are never automatic. Discovery paths can be machine-specific because they live in generated state; no
 canonical source default may embed a personal home path or private hostname.
 
 Before enrollment, validate the trust root, transport identity/encryption, Worker protocol and

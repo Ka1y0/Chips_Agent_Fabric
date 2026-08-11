@@ -35,5 +35,14 @@ an authenticated private transport, reconciles active work by opaque run/session
 auditable recovery event. Identity mismatch, rollback, stale grant, or ambiguous ownership fails
 closed and requires review.
 
-This document is a **FOUNDATION**. Cryptographic enrollment and portable node-runtime services are
-not claimed complete until implementations, schemas, threat review, and multi-platform tests exist.
+V0.4 implements the Supervisor half of runtime-recovery ownership: a per-policy SQLite lease,
+monotonic generation fencing, stale-owner attempt reconciliation, bounded monitor polling, and
+durable next-observation checkpoints. A compatible Node Runtime recovery adapter must reject stale
+generations, enforce the supplied deadline, deduplicate the recovery ID, and expose only the typed
+`runtime.start` operation. See `NODE_RUNTIME_RECOVERY.md`, ADR 0002, and
+`../schemas/node-runtime-adapter-v1.schema.json`. This does not create arbitrary remote execution or
+establish a production Node trust root.
+
+This document is a **FOUNDATION**. Runtime-recovery control-plane fencing is implemented, but
+cryptographic enrollment and portable node-runtime services are not claimed complete until real
+adapters, threat review, and multi-platform host tests exist.

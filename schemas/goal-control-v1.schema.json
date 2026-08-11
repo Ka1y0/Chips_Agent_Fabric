@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chips-agent-fabric.invalid/schemas/goal-control-v1.schema.json",
+  "title": "CHIPS Agent Fabric Goal Control v1",
+  "oneOf": [
+    {"$ref": "#/$defs/pause"},
+    {"$ref": "#/$defs/resume"},
+    {"$ref": "#/$defs/steer"},
+    {"$ref": "#/$defs/stop"}
+  ],
+  "$defs": {
+    "pause": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "mode"],
+      "properties": {
+        "action": {"const": "pause"},
+        "mode": {"enum": ["soft", "hard"]},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "resume": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action"],
+      "properties": {
+        "action": {"const": "resume"},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "steer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "instruction", "preserveValidWork"],
+      "properties": {
+        "action": {"const": "steer"},
+        "instruction": {"type": "string", "minLength": 1},
+        "priority": {"type": ["integer", "null"], "minimum": 0, "maximum": 100},
+        "preserveValidWork": {"type": "boolean"}
+      }
+    },
+    "stop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "reason"],
+      "properties": {
+        "action": {"const": "stop"},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

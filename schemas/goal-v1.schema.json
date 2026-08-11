@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chips-agent-fabric.invalid/schemas/goal-v1.schema.json",
+  "title": "CHIPS Agent Fabric Autonomous Goal v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id", "projectID", "intent", "effectiveIntent", "state", "pauseMode", "terminationReason",
+    "terminationDetail", "iterationCount", "noProgressCount", "taskCount",
+    "failureCount", "budgets", "steerVersion", "version", "createdAt", "updatedAt",
+    "startedAt", "lastEvaluatedAt", "finishedAt", "eventCursor", "currentPlan",
+    "generatedTasks", "latestVerifier"
+  ],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "projectID": {"type": "string", "minLength": 1},
+    "intent": {"type": "string", "minLength": 1},
+    "effectiveIntent": {"type": "string", "minLength": 1},
+    "state": {"enum": ["created", "running", "softPaused", "hardPaused", "stopped", "terminated"]},
+    "pauseMode": {"enum": [null, "soft", "hard"]},
+    "terminationReason": {
+      "enum": [
+        null, "SUCCESS", "BLOCKED", "NO_PROGRESS", "ITERATION_LIMIT", "BUDGET_LIMIT",
+        "REPEATED_FAILURE", "SAFETY_BOUNDARY", "PERMISSION_REQUIRED", "HUMAN_ESCALATION",
+        "USER_STOPPED"
+      ]
+    },
+    "terminationDetail": {"type": ["string", "null"]},
+    "iterationCount": {"type": "integer", "minimum": 0},
+    "noProgressCount": {"type": "integer", "minimum": 0},
+    "taskCount": {"type": "integer", "minimum": 0},
+    "failureCount": {"type": "integer", "minimum": 0},
+    "budgets": {"$ref": "#/$defs/budgets"},
+    "steerVersion": {"type": "integer", "minimum": 0},
+    "version": {"type": "integer", "minimum": 0},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "updatedAt": {"type": "string", "format": "date-time"},
+    "startedAt": {"type": ["string", "null"], "format": "date-time"},
+    "lastEvaluatedAt": {"type": ["string", "null"], "format": "date-time"},
+    "finishedAt": {"type": ["string", "null"], "format": "date-time"},
+    "eventCursor": {"type": "integer", "minimum": 0},
+    "currentPlan": {
+      "type": ["object", "null"],
+      "properties": {
+        "iterationID": {"type": "string"},
+        "sequence": {"type": "integer", "minimum": 1},
+        "state": {"type": "string"},
+        "summary": {"type": ["string", "null"]},
+        "rationale": {"type": ["string", "null"]}
+      },
+      "required": ["iterationID", "sequence", "state", "summary", "rationale"],
+      "additionalProperties": false
+    },
+    "generatedTasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "actionID": {"type": "string"},
+          "iterationID": {"type": "string"},
+          "ordinal": {"type": "integer", "minimum": 0},
+          "key": {"type": "string"},
+          "title": {"type": "string"},
+          "description": {"type": "string"},
+          "role": {"type": "string"},
+          "state": {"type": "string"},
+          "taskID": {"type": ["string", "null"]},
+          "error": {"type": ["string", "null"]}
+        },
+        "required": [
+          "actionID", "iterationID", "ordinal", "key", "title", "description", "role",
+          "state", "taskID", "error"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "latestVerifier": {
+      "type": ["object", "null"],
+      "properties": {
+        "iterationID": {"type": "string"},
+        "sequence": {"type": "integer", "minimum": 1},
+        "satisfied": {"type": "boolean"},
+        "summary": {"type": ["string", "null"]},
+        "progressFingerprint": {"type": ["string", "null"]},
+        "terminationReason": {"type": ["string", "null"]},
+        "evidence": {"type": "object"}
+      },
+      "required": [
+        "iterationID", "sequence", "satisfied", "summary", "progressFingerprint",
+        "terminationReason", "evidence"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxIterations", "maxTasks", "maxFailures", "noProgressLimit",
+        "maxElapsedSeconds", "maxTotalTokens", "maxCostUSD"
+      ],
+      "properties": {
+        "maxIterations": {"type": "integer", "minimum": 1},
+        "maxTasks": {"type": "integer", "minimum": 1},
+        "maxFailures": {"type": "integer", "minimum": 1},
+        "noProgressLimit": {"type": "integer", "minimum": 1},
+        "maxElapsedSeconds": {"type": ["number", "null"], "exclusiveMinimum": 0},
+        "maxTotalTokens": {"type": ["integer", "null"], "minimum": 1},
+        "maxCostUSD": {"type": ["number", "null"], "exclusiveMinimum": 0}
+      }
+    }
+  }
+}

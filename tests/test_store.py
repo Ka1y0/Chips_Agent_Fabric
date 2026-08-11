@@ -1,4 +1,6 @@
 import sqlite3
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -10,6 +12,7 @@ from project_supervisor.domain import (
     NodeState,
     Provider,
     ResourceState,
+    RunState,
     TaskLabel,
     TaskRecord,
     TaskRequirements,
@@ -19,12 +22,17 @@ from project_supervisor.domain import (
 )
 from project_supervisor.scheduler import DeterministicScheduler
 from project_supervisor.state_machine import InvalidTransition
-from project_supervisor.store import StateStore, timestamp
+from project_supervisor.store import (
+    ExecutionLeaseLostError,
+    StateStore,
+    redact_sensitive,
+    timestamp,
+)
 
 
-def task_record() -> TaskRecord:
+def task_record(task_id: str = "task-1") -> TaskRecord:
     return TaskRecord(
-        id="task-1",
+        id=task_id,
         project_id="project-1",
         title="Inspect fixture",
         description="Read-only analysis of an isolated fixture",
@@ -34,6 +42,22 @@ def task_record() -> TaskRecord:
             labels=frozenset({TaskLabel.REVIEW}),
             required_capabilities=frozenset({"review"}),
         ),
+    )
+
+
+def worker_snapshot(worker_id: str) -> WorkerSnapshot:
+    return WorkerSnapshot(
+        id=worker_id,
+        node_id="node-1",
+        harness=Harness.MOCK,
+        provider=Provider.MOCK,
+        model=ModelDescriptor("mock-model", "Mock Model", Provider.MOCK),
+        state=WorkerState.IDLE,
+        node_state=NodeState.ONLINE,
+        resource_state=ResourceState.AVAILABLE,
+        capabilities=frozenset({"review"}),
+        code_write_allowed=False,
+        privacy_allowed=True,
     )
 
 
@@ -47,6 +71,70 @@ def store(tmp_path) -> StateStore:
         goal="Analyze fixture",
     )
     return value
+
+
+def test_sensitive_key_variants_are_recursively_redacted_without_hiding_accounting() -> None:
+    marker = "CREDENTIAL-MARKER-MUST-NOT-PERSIST"
+    credential_keys = (
+        "accessToken",
+        "access_token",
+        "access-token",
+        "apiKey",
+        "api_key",
+        "clientSecret",
+        "client_secret",
+        "privateKey",
+        "private_key",
+        "refreshToken",
+        "refresh_token",
+        "oauthToken",
+        "oauth_token",
+        "authToken",
+        "auth_header",
+        "authorization",
+        "cookie",
+        "sessionCookie",
+        "session_cookie",
+        "bearerToken",
+        "bearer_token",
+        "githubToken",
+        "service-token",
+        "jwt_token",
+        "csrfToken",
+        "password",
+        "databasePassword",
+        "secret",
+        "sharedSecret",
+        "signature",
+        "requestSignature",
+    )
+    accounting = {
+        "input_tokens": 101,
+        "outputTokens": 23,
+        "token_count": 124,
+        "remaining_tokens": 900,
+        "cache_read_tokens": 17,
+        "cacheWriteTokens": 5,
+    }
+
+    redacted = redact_sensitive(
+        {
+            "nested": [{key: marker for key in credential_keys}],
+            "accounting": accounting,
+        }
+    )
+
+    assert set(redacted["nested"][0]) == set(credential_keys)
+    assert set(redacted["nested"][0].values()) == {"[REDACTED]"}
+    assert redacted["accounting"] == accounting
+
+    formatted = redact_sensitive(
+        f"sessionCookie={marker}; bearerToken={marker}; oauth_token={marker}"
+    )
+    assert marker not in formatted
+    assert redact_sensitive("input_tokens=101 token_count=124") == (
+        "input_tokens=101 token_count=124"
+    )
 
 
 def test_task_state_and_event_commit_together(store: StateStore) -> None:
@@ -68,6 +156,57 @@ def test_illegal_transition_rolls_back_without_event(store: StateStore) -> None:
         store.transition_task("task-1", TaskState.SUCCEEDED)
     assert store.get_task("task-1")["state"] == TaskState.DRAFT.value
     assert store.highest_event_sequence() == before
+
+
+def test_failed_migration_rolls_back_schema_and_version(tmp_path, monkeypatch) -> None:
+    migrations = tmp_path / "migrations"
+    migrations.mkdir()
+    (migrations / "9999_broken.sql").write_text(
+        "CREATE TABLE should_be_rolled_back(id INTEGER PRIMARY KEY);\n"
+        "INSERT INTO missing_table(id) VALUES (1);\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(StateStore, "MIGRATIONS_PATH", migrations)
+    database = tmp_path / "broken.db"
+
+    with pytest.raises(sqlite3.OperationalError, match="missing_table"):
+        StateStore(database)
+
+    with sqlite3.connect(database) as connection:
+        partial_table = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='should_be_rolled_back'"
+        ).fetchone()
+        applied_versions = connection.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        ).fetchall()
+    assert partial_table is None
+    assert applied_versions == []
+
+
+def test_concurrent_store_initializers_serialize_migrations(tmp_path) -> None:
+    database = tmp_path / "concurrent.db"
+    program = "import sys; from project_supervisor.store import StateStore; StateStore(sys.argv[1])"
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", program, str(database)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for _ in range(4)
+    ]
+    failures = []
+    for process in processes:
+        stdout, stderr = process.communicate(timeout=20)
+        if process.returncode != 0:
+            failures.append(stderr or stdout)
+
+    assert failures == []
+    store = StateStore(database)
+    expected = len(list(store.MIGRATIONS_PATH.glob("*.sql")))
+    with store.connect() as connection:
+        applied = connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
+    assert applied == expected
 
 
 def test_event_journal_is_database_enforced_append_only(store: StateStore) -> None:
@@ -118,6 +257,247 @@ def test_routing_decision_and_reasons_are_durable(store: StateStore) -> None:
     assert store.list_events(task_id="task-1")[-1]["kind"] == "routingDecisionRecorded"
 
 
+def test_dependency_edges_reject_self_and_cycles_and_duplicate_is_idempotent(
+    store: StateStore,
+) -> None:
+    store.create_task(task_record("task-a"), "#001")
+    store.create_task(task_record("task-b"), "#002")
+    store.create_task(task_record("task-c"), "#003")
+
+    with pytest.raises(ValueError, match="itself"):
+        store.add_task_dependency("task-a", "task-a")
+
+    store.add_task_dependency("task-b", "task-a")
+    original_events = [
+        event for event in store.list_events(limit=200) if event["kind"] == "taskDependencyAdded"
+    ]
+    assert len(original_events) == 1
+    assert original_events[0]["payload"] == {"dependsOnTaskID": "task-a"}
+
+    store.add_task_dependency("task-b", "task-a")
+    with pytest.raises(ValueError, match="cycle"):
+        store.add_task_dependency("task-a", "task-b")
+    store.transition_task("task-c", TaskState.QUEUED)
+    store.transition_task("task-c", TaskState.READY)
+    store.transition_task("task-c", TaskState.RUNNING)
+    with pytest.raises(ValueError, match="after task execution"):
+        store.add_task_dependency("task-c", "task-a")
+
+    assert store.task_dependencies("task-b") == [
+        {"task_id": "task-a", "state": TaskState.DRAFT.value}
+    ]
+    assert [
+        event for event in store.list_events(limit=200) if event["kind"] == "taskDependencyAdded"
+    ] == original_events
+
+
+def test_claim_task_dispatch_atomically_reserves_task_worker_and_run(
+    store: StateStore,
+) -> None:
+    store.upsert_node(
+        node_id="node-1",
+        hostname="node-1",
+        display_name="Node 1",
+        role="control",
+        state=NodeState.ONLINE,
+    )
+    store.upsert_worker(worker_snapshot("worker-1"))
+    store.upsert_worker(worker_snapshot("worker-2"))
+    store.create_task(task_record(), "#001")
+    store.transition_task("task-1", TaskState.QUEUED)
+    ready = store.transition_task("task-1", TaskState.READY)
+
+    claim = store.claim_task_dispatch("task-1", ["worker-1"], expected_version=ready["version"])
+
+    assert claim is not None
+    assert claim["attempt"] == 1
+    run_id = claim["runIDs"]["worker-1"]
+    assert store.get_task("task-1")["state"] == TaskState.RUNNING.value
+    assert store.get_worker_run(run_id)["state"] == "starting"
+    workers = {worker["id"]: worker for worker in store.list_workers()}
+    assert workers["worker-1"]["state"] == WorkerState.STARTING.value
+    assert workers["worker-2"]["state"] == WorkerState.IDLE.value
+
+    current_version = store.get_task("task-1")["version"]
+    assert (
+        store.claim_task_dispatch("task-1", ["worker-2"], expected_version=current_version) is None
+    )
+    assert len(store.list_worker_runs("task-1")) == 1
+    assert {worker["id"]: worker["state"] for worker in store.list_workers()} == {
+        "worker-1": WorkerState.STARTING.value,
+        "worker-2": WorkerState.IDLE.value,
+    }
+
+
+def test_dispatch_claim_rechecks_dependency_added_after_ready_snapshot(
+    store: StateStore,
+) -> None:
+    store.upsert_node(
+        node_id="node-1",
+        hostname="node-1",
+        display_name="Node 1",
+        role="control",
+        state=NodeState.ONLINE,
+    )
+    store.upsert_worker(worker_snapshot("worker-1"))
+    store.create_task(task_record("prerequisite"), "#001")
+    store.create_task(task_record("dependent"), "#002")
+    store.transition_task("dependent", TaskState.QUEUED)
+    ready_snapshot = store.transition_task("dependent", TaskState.READY)
+
+    # The dependency edge deliberately arrives after a scheduler could have read the READY row.
+    # The old version must be fenced, and a caller using the new version still cannot bypass the
+    # claim transaction's canonical DAG check.
+    store.add_task_dependency("dependent", "prerequisite")
+    stale_claim = store.claim_task_dispatch(
+        "dependent",
+        ["worker-1"],
+        expected_version=ready_snapshot["version"],
+    )
+    current = store.get_task("dependent")
+    canonical_claim = store.claim_task_dispatch(
+        "dependent",
+        ["worker-1"],
+        expected_version=current["version"],
+    )
+
+    assert stale_claim is None
+    assert canonical_claim is None
+    assert current["state"] == TaskState.READY.value
+    assert current["version"] == ready_snapshot["version"] + 1
+    assert store.list_worker_runs("dependent") == []
+    assert store.list_workers()[0]["state"] == WorkerState.IDLE.value
+
+
+def test_stale_execution_generation_cannot_mutate_replacement_attempt(
+    store: StateStore,
+) -> None:
+    store.upsert_node(
+        node_id="node-1",
+        hostname="node-1",
+        display_name="Node 1",
+        role="control",
+        state=NodeState.ONLINE,
+    )
+    store.upsert_worker(worker_snapshot("worker-1"))
+    store.create_task(task_record(), "#001")
+    store.transition_task("task-1", TaskState.QUEUED)
+    ready = store.transition_task("task-1", TaskState.READY)
+    first = store.claim_task_dispatch(
+        "task-1",
+        ["worker-1"],
+        expected_version=ready["version"],
+        lease_owner_id="runtime-a",
+        lease_ttl_seconds=6,
+    )
+    assert first is not None
+    first_run = first["runIDs"]["worker-1"]
+    assert store.activate_worker_run(
+        first_run,
+        lease_owner_id="runtime-a",
+        lease_generation=first["leaseGeneration"],
+    )
+    with store.transaction() as connection:
+        connection.execute(
+            "UPDATE task_execution_leases SET expires_at='1970-01-01T00:00:00Z' "
+            "WHERE task_id='task-1'"
+        )
+    assert store.recover_interrupted({"task-1"}) == {
+        "runsInterrupted": 1,
+        "tasksInterrupted": 1,
+    }
+    requeued = store.transition_task("task-1", TaskState.READY, actor="recovery")
+    second = store.claim_task_dispatch(
+        "task-1",
+        ["worker-1"],
+        expected_version=requeued["version"],
+        lease_owner_id="runtime-b",
+        lease_ttl_seconds=6,
+    )
+    assert second is not None
+
+    with pytest.raises(ExecutionLeaseLostError):
+        store.transition_task(
+            "task-1",
+            TaskState.WAITING,
+            lease_owner_id="runtime-a",
+            lease_generation=first["leaseGeneration"],
+        )
+    with pytest.raises(ExecutionLeaseLostError):
+        store.transition_worker_run(
+            first_run,
+            RunState.COMPLETED,
+            lease_owner_id="runtime-a",
+            lease_generation=first["leaseGeneration"],
+        )
+    with pytest.raises(ExecutionLeaseLostError):
+        store.set_worker_state(
+            "worker-1",
+            WorkerState.IDLE,
+            task_id="task-1",
+            lease_owner_id="runtime-a",
+            lease_generation=first["leaseGeneration"],
+        )
+
+    assert store.get_task("task-1")["state"] == TaskState.RUNNING.value
+    assert store.get_task("task-1")["attempt_count"] == 2
+    second_run = store.get_worker_run(second["runIDs"]["worker-1"])
+    assert second_run["state"] == RunState.STARTING.value
+    assert store.list_workers()[0]["state"] == WorkerState.STARTING.value
+
+
+def test_worker_result_is_immutable_and_identical_replay_is_idempotent(
+    store: StateStore,
+) -> None:
+    store.upsert_node(
+        node_id="node-1",
+        hostname="node-1",
+        display_name="Node 1",
+        role="control",
+        state=NodeState.ONLINE,
+    )
+    store.upsert_worker(worker_snapshot("worker-1"))
+    store.create_task(task_record(), "#001")
+    store.transition_task("task-1", TaskState.QUEUED)
+    ready = store.transition_task("task-1", TaskState.READY)
+    claim = store.claim_task_dispatch("task-1", ["worker-1"], expected_version=ready["version"])
+    assert claim is not None
+    run_id = claim["runIDs"]["worker-1"]
+    result = {
+        "run_id": run_id,
+        "summary": "Fixture analyzed",
+        "changed_files": ["report.json"],
+        "commands_run": ["pytest -q"],
+        "tests": [{"name": "unit", "passed": True}],
+        "artifacts": ["report.json"],
+        "commit_hash": "abc123",
+        "blockers": [],
+        "confidence": 0.9,
+        "recommended_next_actions": ["verify report"],
+    }
+
+    store.save_worker_result(**result)
+    with store.connect() as connection:
+        original = dict(
+            connection.execute("SELECT * FROM worker_results WHERE run_id=?", (run_id,)).fetchone()
+        )
+    store.save_worker_result(**result)
+    with pytest.raises(RuntimeError, match="immutable"):
+        store.save_worker_result(**{**result, "summary": "Changed after persistence"})
+
+    with store.connect() as connection:
+        persisted = dict(
+            connection.execute("SELECT * FROM worker_results WHERE run_id=?", (run_id,)).fetchone()
+        )
+    result_events = [
+        event
+        for event in store.list_events(task_id="task-1")
+        if event["kind"] == "workerResultRecorded"
+    ]
+    assert persisted == original
+    assert len(result_events) == 1
+
+
 def test_api_token_is_hashed_scoped_expirable_and_never_recoverable(store: StateStore) -> None:
     token_id, token = store.issue_api_token(label="monitor", scopes={"observe:read"})
     assert store.verify_api_token(token, "observe:read")
@@ -165,7 +545,9 @@ def test_boot_recovery_marks_runs_and_tasks_interrupted(store: StateStore) -> No
     assert store.get_task("task-1")["state"] == TaskState.INTERRUPTED.value
     with store.connect() as connection:
         run = connection.execute("SELECT * FROM worker_runs WHERE id='run-1'").fetchone()
+        worker = connection.execute("SELECT * FROM workers WHERE id='worker-1'").fetchone()
     assert run["state"] == "interrupted"
+    assert worker["state"] == "idle"
 
 
 def test_unknown_usage_cannot_be_silently_stored_as_null(store: StateStore) -> None:

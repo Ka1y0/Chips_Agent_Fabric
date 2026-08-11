@@ -6,9 +6,11 @@
     ".venv/",
     ".pytest_cache/",
     ".ruff_cache/",
-    "artifacts/goal-run/",
-    "artifacts/open-source-v0.1/",
+    "artifacts/",
+    "ArtLab/",
     "build/",
+    "CyberIsland/",
+    "CyberOffice/",
     "dist/"
   ],
   "excludeFiles": [
@@ -17,5 +19,5 @@
     "scripts/run_real_acceptance.py",
     "scripts/run_remote_worker_gates.py"
   ],
-  "reason": "Private V0 evidence and machine-specific integration harnesses remain outside the public source payload."
+  "reason": "All generated artifacts, private evidence, and machine-specific integration harnesses remain outside the public source payload."
 }

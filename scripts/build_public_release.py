@@ -8,11 +8,21 @@ import gzip
 import hashlib
 import io
 import json
+import re
 import subprocess
 import tarfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+SEMVER_RELEASE = re.compile(
+    r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    r"(?:-(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+)
+MAX_RELEASE_VERSION_LENGTH = 128
+_PRIVATE_SCOPE_ROOTS = frozenset({"artifacts", "ArtLab", "CyberIsland", "CyberOffice"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +43,12 @@ class ReleasePolicy:
     def includes(self, relative_path: str) -> bool:
         normalized = PurePosixPath(relative_path).as_posix()
         if normalized.startswith("/") or ".." in PurePosixPath(normalized).parts:
+            return False
+        # Generated evidence and the separately released Cyber Office workspaces are never
+        # Supervisor source-package inputs, even if a policy edit accidentally omits a boundary.
+        if PurePosixPath(normalized).parts[:1] and PurePosixPath(normalized).parts[0] in (
+            _PRIVATE_SCOPE_ROOTS
+        ):
             return False
         if normalized in self.exclude_files:
             return False
@@ -102,6 +118,14 @@ def sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def validate_release_version(value: str) -> str:
+    """Validate a path-safe SemVer release label without guessing a default."""
+
+    if len(value) > MAX_RELEASE_VERSION_LENGTH or SEMVER_RELEASE.fullmatch(value) is None:
+        raise ValueError("release version must be an explicit valid SemVer label")
+    return value
+
+
 def _tar_bytes(files: list[ReleaseFile], *, epoch: int, prefix: str) -> bytes:
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as archive:
@@ -122,9 +146,11 @@ def build_release(
     root: Path,
     output_dir: Path,
     *,
+    release_version: str,
     epoch: int | None = None,
     revision: str | None = None,
 ) -> dict[str, Any]:
+    release_version = validate_release_version(release_version)
     policy = ReleasePolicy.load(root / "release" / "public-release-files.json")
     revision = revision or _run_git(root, "rev-parse", "HEAD")
     epoch = (
@@ -142,7 +168,7 @@ def build_release(
     if output_dir.exists() and any(output_dir.iterdir()):
         raise ValueError("output directory must be absent or empty")
     output_dir.mkdir(parents=True, exist_ok=True)
-    prefix = "chips-agent-fabric-0.1.0-alpha.1"
+    prefix = f"chips-agent-fabric-{release_version}"
     archive_path = output_dir / f"{prefix}-source.tar.gz"
     tar_payload = _tar_bytes(files, epoch=epoch, prefix=prefix)
     with (
@@ -163,7 +189,7 @@ def build_release(
     archive_payload = archive_path.read_bytes()
     manifest = {
         "schemaVersion": 1,
-        "release": "0.1.0-alpha.1",
+        "release": release_version,
         "revision": revision,
         "sourceDateEpoch": epoch,
         "license": "Apache-2.0",
@@ -175,7 +201,7 @@ def build_release(
         },
         "files": file_entries,
         "excludedPrivateHistory": True,
-        "publicationStatus": "built-for-publication",
+        "published": False,
     }
     manifest_path = output_dir / "source-release-manifest.json"
     manifest_payload = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
@@ -194,11 +220,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--release-version", required=True)
     parser.add_argument("--source-date-epoch", type=int)
     args = parser.parse_args()
     manifest = build_release(
         args.root.resolve(),
         args.output_dir.resolve(),
+        release_version=args.release_version,
         epoch=args.source_date_epoch,
     )
     print(json.dumps(manifest["archive"], sort_keys=True))

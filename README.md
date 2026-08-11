@@ -9,14 +9,12 @@ APIs, and telemetry.
 experimental AI-to-AI communication plane; it never replaces canonical SQLite, events, or
 structured artifacts.
 
-The V0.1 milestone preserves the real cross-device V0 baseline and adds portable open-source
-foundations. Automated trust-root enrollment, Privilege Broker execution, transport installation,
-and zero-touch deployment are not claimed complete.
-
-The **Hybrid Engine** is Supervisor's deterministic, explainable routing layer. It filters Workers
-by hard capability, privacy, availability, and policy constraints, then records why a topology and
-Worker were selected. V0.1 establishes resource-aware routing inputs and normalized history; it does
-not introduce opaque self-learning decisions.
+The V0.2 beta preserves the real cross-device V0 baseline and advances Supervisor into a durable,
+recoverable autonomous orchestration kernel. It includes Local Worker Protocol V2 and registered
+native CLI paths for Codex, Claude Code, Grok, and Google AGY. Provider executables and existing
+operator-controlled authentication are still deployment prerequisites; deterministic tests do not
+consume live model quota. Automated trust-root enrollment, Privilege Broker execution, transport
+installation, and zero-touch deployment are not claimed complete.
 
 ## Start here
 
@@ -47,11 +45,6 @@ Initialize an isolated local Supervisor explicitly:
 No provider API key, subscription, or running model server is required for deterministic tests and
 mock-mode workflows.
 
-A future node joins by running read-only discovery, reviewing or creating its stable identity,
-establishing an operator-approved trust root and authenticated encrypted transport, declaring
-verified capabilities, registering Workers, and passing acceptance tests. V0.1 generates the safe
-bootstrap plan and protocol records; it does not automatically perform those privileged steps.
-
 On Windows PowerShell use `py -3.12 -m venv .venv` and executables under
 `.\.venv\Scripts\` (for example `.\.venv\Scripts\chips.exe bootstrap --redact-host --json`). Windows
 and Linux bootstrap discovery are contract-tested foundations; they are not yet real-host-verified
@@ -78,6 +71,8 @@ zero-touch deployments.
 - [`docs/NODE_PROTOCOL.md`](docs/NODE_PROTOCOL.md) — node identity and transport semantics
 - [`docs/CAPABILITY_MODEL.md`](docs/CAPABILITY_MODEL.md) — least-privilege authority model
 - [`docs/SCHEDULER.md`](docs/SCHEDULER.md) — deterministic Hybrid Engine foundations
+- [`docs/AUTONOMOUS_ITERATION.md`](docs/AUTONOMOUS_ITERATION.md) — durable Goal loop and controls
+- [`docs/AUTONOMOUS_HOST.md`](docs/AUTONOMOUS_HOST.md) — production host operations and resources
 - [`docs/BOOTSTRAP.md`](docs/BOOTSTRAP.md) — portable discovery and safe plan generation
 - [`docs/RECOVERY.md`](docs/RECOVERY.md) — restart, migration, and failure recovery
 - [`docs/PROJECT_BRIDGE_INTEGRATION.md`](docs/PROJECT_BRIDGE_INTEGRATION.md) — optional codec boundary
@@ -91,13 +86,17 @@ zero-touch deployments.
 Source is licensed under Apache-2.0; see [`LICENSE`](LICENSE), [`NOTICE`](NOTICE), and
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). Private V0 evidence and local Git history contain
 operator topology and are not distributable inputs. Release tooling builds a deterministic,
-privacy-scanned source archive from the explicit policy in `release/public-release-files.json`.
+privacy-scanned source archive from an immutable Git revision and the explicit policy in
+`release/public-release-files.json`. Every `artifacts/` path is excluded even if the policy is
+accidentally loosened. A release label has no implicit default:
 
-The `v0.1.0-alpha.1` public seed is released from a privacy-audited clean source archive and a fresh
-Git history. It is an alpha foundation, not a claim of production-complete autonomous deployment.
-Mirroring and signing remain separate future actions.
-
-```text
-ZERO_TOUCH_DEPLOYMENT_COMPLETE      = NO
-PROJECT_BRIDGE_INTEGRATION_COMPLETE = NO
+```sh
+python scripts/build_public_release.py \
+  --release-version 0.2.0-beta.1 \
+  --output-dir /path/to/empty/release-output
 ```
+
+The package version is `0.2.0b1`; the corresponding prerelease tag is `v0.2.0-beta.1`. Publication,
+mirroring, signing, and remote visibility remain explicit release actions. A Local Worker V2 launch
+can be exactly-once logically within one durable Local Worker authority, but the system does not
+claim universal exactly-once external side effects or provider-native resume where a CLI lacks it.

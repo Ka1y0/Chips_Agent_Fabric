@@ -10,6 +10,14 @@ artifacts/goal-run export-ignore
 artifacts/goal-run/** export-ignore
 artifacts/open-source-v0.1 export-ignore
 artifacts/open-source-v0.1/** export-ignore
+artifacts/autonomous-iteration-v0.2 export-ignore
+artifacts/autonomous-iteration-v0.2/** export-ignore
+artifacts/autonomous-host-v0.2.1 export-ignore
+artifacts/autonomous-host-v0.2.1/** export-ignore
+artifacts/cyber-office-v0.3 export-ignore
+artifacts/cyber-office-v0.3/** export-ignore
+artifacts/fabric-v0.4-autonomous export-ignore
+artifacts/fabric-v0.4-autonomous/** export-ignore
 docs/CLAUDE_GOAL_HANDOFF.md export-ignore
 .agents export-ignore
 .agents/** export-ignore

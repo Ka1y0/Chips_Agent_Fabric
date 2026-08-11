@@ -13,7 +13,7 @@ flowchart LR
     agent["Authorized agent client"]
     office["Cyber Office<br/>human-facing observer"]
 
-    subgraph control["Supervisor control plane"]
+    subgraph control["Project_Supervisor control plane"]
         cli["CLI"]
         api["REST /v1 + WebSocket /v1/stream"]
         runtime["Async runtime"]
@@ -24,8 +24,9 @@ flowchart LR
     end
 
     subgraph workers["Worker execution boundaries"]
-        native["Native subprocess adapters<br/>Claude / Grok / AGY"]
-        remote["Local Worker protocol v1<br/>private transport required"]
+        native["Native subprocess adapters<br/>Codex / Claude / Grok / AGY"]
+        remote["Local Worker protocol v1/v2<br/>durable registry + registered drivers"]
+        localdrivers["Server-owned driver catalog<br/>Codex / Claude / Grok / AGY / future"]
         mock["Deterministic mock worker"]
     end
 
@@ -42,9 +43,11 @@ flowchart LR
     runtime --> adapters
     adapters --> native
     adapters --> remote
+    remote --> localdrivers
     adapters --> mock
     native --> adapters
     remote --> adapters
+    localdrivers --> remote
     mock --> adapters
     adapters --> runtime
     runtime --> journal
@@ -71,7 +74,11 @@ sequenceDiagram
     R->>S: Route against one frozen worker snapshot
     S-->>R: Selected/rejected candidates + reasons
     R->>D: Persist routing decision
-    R->>W: Execute bounded WorkerRequest
+    R->>D: Claim Task + execution lease; create Worker run
+    R->>D: Persist provider-job intent + idempotency key
+    R->>W: Start bounded WorkerRequest
+    W-->>R: Opaque provider job handle (when supported)
+    R->>D: Bind sanitized handle (when returned)
     loop Output and heartbeat
         W-->>R: Normalized WorkerEvent
         R->>D: Append sanitized event
@@ -94,16 +101,17 @@ state, approve a RED action, or satisfy a definition of done by itself.
 | Scheduler | Hard constraints, deterministic scoring, explainable routing | Process execution or mutable global state |
 | Runtime | Dispatch, concurrency, cancellation, result orchestration | Credential acquisition or model-specific parsing |
 | Store | Migrations, durable state, event sequence, token hashes | Chat history as state or plaintext bearer tokens |
-| Native adapters | Process groups, streaming capture, provider parsing, redaction | Global scheduling or approval decisions |
-| Local Worker adapter | Versioned HTTP boundary and read-only local-AI enforcement | Public network exposure or code-writing delegation |
+| Native adapters | Process groups, streaming capture, provider parsing, redaction | Global scheduling, approval decisions, or unadvertised recovery semantics |
+| Local Worker adapter/daemon | Versioned HTTP boundary, read-only enforcement, v2 durable launch registry, registered server-owned driver profiles, job reconcile/resume/collect | Client-supplied executable/argv/env/cwd, public network exposure, code-writing delegation, or unobserved provider idempotency claims |
+| Node recovery monitor | Due-policy polling, fenced leases, checkpoints, typed runtime-start dispatch | Credentials, arbitrary commands, or implicit grants |
 | Verification | Deterministic acceptance checks and evidence | Subjective model self-attestation |
 | REST/WebSocket API | Read-only projections, replay cursor, scoped observation | Arbitrary shell/filesystem/model access |
 | Cyber Office | Human-readable live observation | Canonical state or task mutation in V0 |
 
 ## Data and recovery model
 
-- SQLite WAL is the canonical store. State mutations and their normalized events share a
-  transaction.
+- SQLite WAL is the canonical store. Lifecycle mutations that emit normalized events commit the
+  state change and event in one transaction.
 - `events.sequence` is the global monotonic replay cursor. Delivery is at-least-once; consumers
   deduplicate by sequence/event identifier.
 - Provider session IDs remain opaque. They may be captured for resume but are never parsed for
@@ -112,15 +120,43 @@ state, approve a RED action, or satisfy a definition of done by itself.
   not a substitute for missing telemetry.
 - Runtime evidence is sanitized before it is eligible for `artifacts/goal-run/`; raw credential
   stores and provider authentication material are never evidence inputs.
-- Crash recovery reconciles persisted non-terminal runs with actual process/worker state. Recovery
-  behavior still requires release-gate verification; architecture alone is not proof.
+- Dispatch writes provider-job intent and an idempotency key before adapter launch, then binds an
+  opaque private handle. Canonical lookup identifiers remain exact; metadata is sanitized and the
+  remote API uses a separate allowlist. This is durable intent, not an atomic transaction with the
+  provider.
+- Crash recovery first reconciles non-terminal jobs whose adapters truthfully advertise the needed
+  capability. Task execution lease generations fence stale owners. Known running jobs can be
+  reattached; repeatably collectable terminal jobs can be ingested; only authoritative
+  `providerNotFound` permits automatic single-job retry.
+- Ambiguous/unreachable provider state and unsupported resume/collection park work in `WAITING`,
+  create a structured escalation, and suppress fresh dispatch.
+  Native CLI adapters remain non-resumable after restart. See [`RECOVERY.md`](RECOVERY.md).
+- Recovery verifies the current adapter type, instance identity, and capabilities against the
+  persisted launch contract before querying a provider. Definitive reconciliation resolves prior
+  transient escalations; collected provider state cannot be reopened by a late observation.
+- Canonical result ingestion/finalization is idempotent. External launch and cancellation are only
+  best-effort unless the provider itself enforces the advertised idempotency key. Local Worker v2
+  enforces one logical launch per key inside one healthy durable daemon authority; v1 and native CLI
+  adapters do not inherit that claim.
+- A production Local Worker identity keeps `node_id`, stable `authority_id`/`registry_id`, ephemeral
+  `runtime_instance_id`, Worker/adapter identity, Supervisor run, provider-job ID, launch generation,
+  and driver-profile revision/fingerprint separate. The daemon owns executable resolution and argv;
+  the HTTP request can select only a registered semantic driver ID.
+- Run API projections expose only a redacted `providerJob` subset. Private adapter metadata, raw
+  idempotency keys, endpoint/process identity, and escalation details remain in local canonical
+  state.
+- Optional Task verification scopes snapshot criteria definitions plus Task, plan, and steering
+  versions. Dispatch captures that scope on every Worker run; apply requires the verifier to echo
+  the exact scope, semantic Task revision, and source attempt it evaluated. A stale result cannot
+  satisfy a newer scope/attempt, iteration steering epochs are checked, and scoped verification
+  never rewrites project-level criterion templates.
 
 ## Trust and network boundaries
 
 ```mermaid
 flowchart TB
     subgraph trusted["Operator-controlled Mac"]
-        supervisor["Supervisor"]
+        supervisor["Project_Supervisor"]
         sqlite[("Private local state")]
         providerAuth["Provider-owned auth context"]
         supervisor --- sqlite

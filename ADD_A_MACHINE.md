@@ -23,7 +23,7 @@ worker port to the public Internet or ordinary LAN.
 For a Windows Local Worker, use this topology:
 
 ```text
-Supervisor -> Tailscale HTTPS Serve -> 127.0.0.1:7331 Worker
+Project_Supervisor -> Tailscale HTTPS Serve -> 127.0.0.1:7331 Worker
 ```
 
 Install the official Tailscale clients, authenticate both machines into the same tailnet, and leave
@@ -60,7 +60,7 @@ non-empty bearer is supplied.
 ## 3. Authenticate workers manually
 
 Use each provider's official interactive login in the normal user session. Do not copy OAuth files,
-cookies, API keys, or Keychain entries between machines. Supervisor may later validate status
+cookies, API keys, or Keychain entries between machines. Project_Supervisor may later validate status
 without reading secret values.
 
 ## 4. Register capability metadata

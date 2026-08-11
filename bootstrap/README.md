@@ -5,6 +5,8 @@
 ```sh
 python3 bootstrap/chips.py bootstrap --json
 python3 bootstrap/chips.py bootstrap --emit --output-dir PATH --redact-host --json
+python3 bootstrap/chips.py bootstrap --state-db PRIVATE_PATH --run-id bootstrap-default --json
+python3 bootstrap/chips.py bootstrap-status --state-db PRIVATE_PATH --json
 ```
 
 After installing the package, use `chips bootstrap`. Raw discovery contains local host metadata and
@@ -12,7 +14,8 @@ must stay machine-local; `--redact-host` replaces host identity, local paths, an
 review artifacts. Windows uses `.\.venv\Scripts\chips.exe`; see `docs/BOOTSTRAP.md`.
 
 The first command is strictly read-only. The second writes a review bundle only into a new or empty
-explicit directory. Both remain dry-runs: they never install packages, authenticate, contact remote
+explicit directory. `--state-db` opts into a private durable SQLite plan/audit recorder. All remain
+host-operation dry-runs: they never install packages, authenticate, contact remote
 services, inspect listeners/credentials, start services, elevate privileges, create identity keys,
 configure firewalls/transports, or register Workers.
 

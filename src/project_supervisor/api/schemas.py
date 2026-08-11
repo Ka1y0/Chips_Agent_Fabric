@@ -60,6 +60,44 @@ class ModelDescriptor(APIModel):
     context_window_tokens: int | None = Field(default=None, alias="contextWindowTokens")
 
 
+class GoalBudgetRequest(APIModel):
+    """Provider-neutral, operator-supplied guardrails for an autonomous Goal."""
+
+    max_iterations: int = Field(default=12, alias="maxIterations", gt=0)
+    max_tasks: int = Field(default=48, alias="maxTasks", gt=0)
+    max_failures: int = Field(default=6, alias="maxFailures", gt=0)
+    no_progress_limit: int = Field(default=3, alias="noProgressLimit", gt=0)
+    max_elapsed_seconds: float | None = Field(default=None, alias="maxElapsedSeconds", gt=0)
+    max_total_tokens: int | None = Field(default=None, alias="maxTotalTokens", gt=0)
+    max_cost_usd: float | None = Field(default=None, alias="maxCostUSD", gt=0)
+
+
+class GoalCreateRequest(APIModel):
+    project_id: str = Field(alias="projectID", min_length=1, max_length=200)
+    intent: str = Field(min_length=1, max_length=100_000)
+    goal_id: str | None = Field(default=None, alias="goalID", min_length=1, max_length=200)
+    budgets: GoalBudgetRequest | None = None
+
+
+class GoalPauseRequest(APIModel):
+    mode: Literal["soft", "hard"]
+    reason: str | None = Field(default=None, min_length=1, max_length=10_000)
+
+
+class GoalResumeRequest(APIModel):
+    reason: str | None = Field(default=None, min_length=1, max_length=10_000)
+
+
+class GoalSteerRequest(APIModel):
+    instruction: str = Field(min_length=1, max_length=100_000)
+    priority: int | None = Field(default=None, ge=0, le=100)
+    preserve_valid_work: bool = Field(default=True, alias="preserveValidWork")
+
+
+class GoalStopRequest(APIModel):
+    reason: str = Field(min_length=1, max_length=10_000)
+
+
 class SnapshotFrame(APIModel):
     type: Literal["snapshot"] = "snapshot"
     snapshot: dict[str, Any]

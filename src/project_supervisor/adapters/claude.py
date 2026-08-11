@@ -5,7 +5,13 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .base import Usage, WorkerRequest
+from .base import (
+    UnsafeWorkerRequest,
+    Usage,
+    WorkerProtocolError,
+    WorkerRequest,
+    request_requires_code_write,
+)
 from .native import NativeSubprocessAdapter, ParsedOutput, redact
 
 
@@ -45,10 +51,15 @@ def _usage(mapping: Mapping[str, Any], *, cost: float | None = None) -> Usage:
 class ClaudeAdapter(NativeSubprocessAdapter):
     """Adapter for Claude Code's verified ``stream-json`` print interface."""
 
-    def __init__(self, executable: str = "claude", **kwargs: Any) -> None:
+    def __init__(
+        self, executable: str = "claude", *, read_only: bool = False, **kwargs: Any
+    ) -> None:
         super().__init__(executable, **kwargs)
+        self.read_only = read_only
 
     def command_arguments(self, request: WorkerRequest) -> Sequence[str]:
+        if self.read_only and request_requires_code_write(request):
+            raise UnsafeWorkerRequest("read-only Claude profile denied code-write authority")
         arguments = [
             "-p",
             request.prompt,
@@ -56,6 +67,22 @@ class ClaudeAdapter(NativeSubprocessAdapter):
             "stream-json",
             "--verbose",
         ]
+        if self.read_only:
+            # These are fixed, operator-owned flags from the pinned Claude CLI contract.  Empty
+            # --tools is the provider's documented no-tool mode; safe-mode also disables hooks,
+            # plugins, MCP discovery, skills, and project instructions.
+            arguments.extend(
+                (
+                    "--permission-mode",
+                    "plan",
+                    "--tools",
+                    "",
+                    "--disable-slash-commands",
+                    "--strict-mcp-config",
+                    "--no-chrome",
+                    "--safe-mode",
+                )
+            )
         if request.session_id:
             arguments.extend(("--resume", request.session_id))
         if request.model:
@@ -68,31 +95,41 @@ class ClaudeAdapter(NativeSubprocessAdapter):
         event = json.loads(line)
         if not isinstance(event, dict):
             raise TypeError("Claude event must be a JSON object")
-        event_type = str(event.get("type", "unknown"))
+        event_type = event.get("type")
+        if not isinstance(event_type, str) or not event_type:
+            raise TypeError("Claude event type must be a non-empty string")
         parsed.provider_event_types.add(event_type)
         session_id = event.get("session_id") or event.get("sessionId")
         if isinstance(session_id, str):
             parsed.session_id = session_id
 
-        if event_type == "assistant" and isinstance(event.get("message"), Mapping):
-            message = event["message"]
+        if event_type == "assistant":
+            message = event.get("message")
+            if not isinstance(message, Mapping):
+                raise TypeError("Claude assistant event must contain a message object")
             model = message.get("model")
             if isinstance(model, str) and model != "<synthetic>":
                 parsed.model = model
             content = message.get("content", ())
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, Mapping) and block.get("type") == "text":
-                        text = block.get("text")
-                        if isinstance(text, str):
-                            parsed.text_fragments.append(text)
+            if not isinstance(content, list):
+                raise TypeError("Claude assistant content must be a list")
+            for block in content:
+                if isinstance(block, Mapping) and block.get("type") == "text":
+                    text = block.get("text")
+                    if not isinstance(text, str):
+                        raise TypeError("Claude text content must contain a string")
+                    parsed.text_fragments.append(text)
             if isinstance(message.get("usage"), Mapping):
                 parsed.usage = _usage(message["usage"], cost=parsed.usage.cost_usd)
 
         if event_type == "result":
+            parsed.terminal_event_count += 1
             result = event.get("result")
-            if isinstance(result, str):
-                parsed.final_text = result.strip()
+            if not isinstance(result, str) or not result.strip():
+                raise TypeError("Claude result event must contain non-empty text")
+            parsed.final_text = result.strip()
+            if event.get("is_error") is True or event.get("isError") is True:
+                parsed.terminal_error = "Claude reported an error result"
             cost = _float_value(event, "total_cost_usd", "cost_usd", "costUsd")
             usage = event.get("usage")
             if isinstance(usage, Mapping):
@@ -119,3 +156,17 @@ class ClaudeAdapter(NativeSubprocessAdapter):
             "sessionId": parsed.session_id,
             "model": parsed.model,
         }
+
+    def validate_output(
+        self,
+        request: WorkerRequest,
+        parsed: ParsedOutput,
+        stdout: str,
+        stderr: str,
+    ) -> None:
+        if parsed.terminal_event_count != 1:
+            raise WorkerProtocolError("Claude output requires exactly one result event")
+        if parsed.terminal_error is not None:
+            raise WorkerProtocolError(parsed.terminal_error)
+        if not parsed.final_text or not parsed.final_text.strip():
+            raise WorkerProtocolError("Claude result text is empty")

@@ -1,10 +1,11 @@
 # Release checklist
 
-This is a fail-closed checklist for a Supervisor release candidate. Every item starts
-unchecked. A code-complete component or historical smoke test does not satisfy a release gate without
-current, sanitized evidence.
+This is the fail-closed checklist for the Project_Supervisor V0.2 beta source candidate. Every item
+starts unchecked. A code-complete component or historical smoke test does not satisfy a release gate
+without current, sanitized evidence. This release is Supervisor-only and requires deterministic
+offline worker tests; it does not require a billable provider generation or a Cyber Office change.
 
-Candidate version: `________________`
+Candidate version: `0.2.0b1` / tag `v0.2.0-beta.1`
 
 Revision / commit: `________________`
 
@@ -16,7 +17,7 @@ Evidence run ID: `________________`
 
 - [ ] The candidate revision is immutable and the working tree contains no unexplained changes.
 - [ ] All project-owned source, docs, tests, configuration examples, and sanitized artifacts are
-      under the canonical CHIPS Agent Fabric repository root.
+      under the canonical Project_Supervisor root.
 - [ ] No neighboring project changed except through separately authorized integration work.
 - [ ] `CAPABILITIES.md`, `docs/GOAL_PROGRESS.md`, `docs/BLOCKERS.md`, and
       `docs/COMPATIBILITY.md` agree on implemented, blocked, and unsupported surfaces.
@@ -29,6 +30,10 @@ Evidence run ID: `________________`
 - [ ] `.venv/bin/pytest` passes with the exact count recorded in evidence.
 - [ ] `.venv/bin/ruff check .` passes.
 - [ ] The wheel and source distribution build without undeclared files or credentials.
+- [ ] Package metadata and `project_supervisor.__version__` both equal `0.2.0b1`; the release
+      manifest and archive use the explicit label `0.2.0-beta.1`.
+- [ ] The source release builder rejects a missing/invalid release label and excludes every
+      `artifacts/` path even if release policy configuration omits it.
 - [ ] A clean-environment install of the built wheel passes CLI `init`, `status`, `tasks`, and `logs`
       smoke tests.
 - [ ] Package inspection confirms the SQLite migration SQL is included and usable after wheel
@@ -54,12 +59,12 @@ Evidence run ID: `________________`
 ## 4. Worker compatibility
 
 - [ ] Mock-adapter end-to-end workflow passes and preserves normalized events/results.
-- [ ] Claude Code exact installed version passes isolated native structured-stream E2E with sanitized
-      session/model/usage evidence.
-- [ ] Grok Build exact installed version passes isolated native structured-stream E2E with sanitized
-      session/model/usage evidence.
-- [ ] Google AGY exact installed version passes isolated read-only E2E; plain-text limitations are
-      represented honestly.
+- [ ] Codex, Claude Code, Grok, and Google AGY native dialects pass deterministic fake-CLI E2E tests,
+      including malformed output, timeout, cancellation, output bounds, and secret redaction.
+- [ ] Installed provider CLI compatibility is inspected only with safe `--help` / `--version`
+      commands; no live model quota is consumed as a release test.
+- [ ] Capability projection distinguishes Local Worker V2 server idempotency from provider-native
+      idempotency/resume, and leaves unavailable model/usage/account data unknown.
 - [ ] Concurrent native workers overlap in time and finish independently without cross-cancellation.
 - [ ] Windows Local Worker protocol v1 health/create/poll/cancel passes against the real worker.
 - [ ] Local AI is rejected for code-writing at both scheduler and adapter boundaries.
@@ -67,15 +72,14 @@ Evidence run ID: `________________`
       events, state, tests, or evidence.
 - [ ] CLI parser compatibility is rechecked after any provider CLI version change.
 
-## 5. API and Cyber Office
+## 5. API and Cyber Office boundary
 
 - [ ] REST `/v1` envelopes, filters, errors, pagination, and unknown telemetry pass contract tests.
 - [ ] WebSocket snapshot/replay/events/keepalive and reconnect/resume pass contract tests.
 - [ ] Remote observation requires a valid `observe:read` token; missing/incorrect scopes fail closed.
-- [ ] Cyber Office mock mode remains functional.
-- [ ] Cyber Office live mode renders real Supervisor nodes, workers, tasks, events, usage, and explicit
-      unavailable telemetry without fabrication.
-- [ ] Cyber Office macOS, iPhone, and iPad build/test gates pass against the candidate contract.
+- [ ] No Cyber Office, Cyber Island, or ArtLab source is included in the Supervisor release commit.
+- [ ] Semantic Supervisor projections expose safe run/task/worker/provider-job state without raw
+      provider metadata, credentials, tokens, or unsafe filesystem details.
 - [ ] A client disconnect cannot affect task/worker execution or canonical state.
 
 ## 6. Network and security
@@ -117,15 +121,17 @@ Evidence run ID: `________________`
 - [ ] Copyright ownership, distribution audience, dependency notices, and license are approved.
 - [ ] `pyproject.toml`, the final `LICENSE`, notices, and release manifest express the same decision.
 
-## 9. Real workflow acceptance
+## 9. Deterministic production-like workflow acceptance
 
 - [ ] A nontrivial task is submitted through the supported Supervisor interface.
 - [ ] The scheduler records selected and rejected candidates with machine-readable reasons.
-- [ ] At least one eligible cloud worker executes; any local-AI participation is read-only/non-code.
+- [ ] A safe local subprocess/fake native worker executes through the production Local Worker path;
+      no billable cloud generation is required.
 - [ ] Failure/retry/replan behavior is exercised without losing event or task history.
 - [ ] Deterministic verification gates the terminal success state.
-- [ ] Cyber Office displays the live workflow and reconnects from its last committed cursor.
-- [ ] The full run is represented by a sanitized, schema-valid evidence bundle.
+- [ ] Supervisor and Local Worker daemon restart paths recover the durable launch/result without
+      duplicate external execution or canonical result ingestion.
+- [ ] Any generated acceptance evidence remains excluded from the release commit and archive.
 
 ## 9a. CHIPS Agent Fabric V0 gate status
 
@@ -141,10 +147,10 @@ FIRST_CROSS_DEVICE_FABRIC_WORKFLOW = PASS
 CHIPS_AGENT_FABRIC_V0_READY        = YES
 ```
 
-Sanitized private acceptance evidence recorded 13/13 passing Worker gates, the full runtime workflow
-succeeded, and Cyber Office rendered the persisted REST/WebSocket lifecycle. Raw evidence remains
-private and is intentionally excluded from public source. Public source publication is governed by
-a separate clean-history and privacy audit.
+Evidence is in `artifacts/goal-run/local-worker-remote-v0/`. The real private route returned 13/13
+passing Worker gates, the full runtime workflow succeeded, and Cyber Office rendered the persisted
+REST/WebSocket lifecycle. This decision is for a private/internal V0 only; publication remains a
+separate authorization.
 
 ## 10. Release decision
 
@@ -152,7 +158,8 @@ a separate clean-history and privacy audit.
       expiry, and compensating control.
 - [ ] `docs/BLOCKERS.md` has no unresolved blocker that contradicts the release scope.
 - [ ] The release owner signs the manifest and records `GO`, `NO-GO`, or `INTERNAL-ONLY`.
-- [ ] Publication/distribution is performed only after separate explicit authorization.
+- [ ] Publication/distribution is performed only under explicit authorization, with a normal
+      fast-forward push, a new annotated prerelease tag, and no history rewrite or force push.
 
 Decision: `NO-GO / INTERNAL-ONLY / GO`
 

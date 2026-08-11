@@ -4,7 +4,7 @@ Status: accepted for V0
 
 ## Context
 
-Supervisor must survive process crashes and machine restarts, supervise heterogeneous native
+Project_Supervisor must survive process crashes and machine restarts, supervise heterogeneous native
 and remote workers, and serve both human and machine observers without treating conversational
 history as state. Cyber Office already defines a read-only REST/WebSocket contract.
 
