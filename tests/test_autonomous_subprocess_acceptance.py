@@ -26,11 +26,11 @@ def test_fresh_process_restart_and_multi_iteration_acceptance(tmp_path: Path) ->
         check=False,
         capture_output=True,
         text=True,
-        # The acceptance script has independent 10s crash and 20s resume
-        # subprocess guards, plus the multi-iteration phase. Keep the outer
-        # guard above their combined ceiling so scheduler load cannot mask the
-        # script's own deterministic failure reports.
-        timeout=45,
+        # The acceptance script has independent 15s crash and 20s resume
+        # subprocess guards, plus the multi-iteration phase and process startup.
+        # Hosted runners can briefly contend with the rest of the subprocess-heavy
+        # suite, so keep the outer guard comfortably above those inner ceilings.
+        timeout=90,
     )
 
     assert result.returncode == 0, result.stderr or result.stdout
