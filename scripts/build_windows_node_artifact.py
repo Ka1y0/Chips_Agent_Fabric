@@ -81,8 +81,8 @@ Artifact SHA-256: `{result.artifact_sha256}`
 Manifest SHA-256: `{result.manifest_sha256}`
 Service profile SHA-256: `{result.service_profile_sha256}`
 
-The Mac does not have the exact machine-readable host binding yet. On FABRIC-WINDOWS-NODE, use the bundled
-`project_supervisor.fabric.windows_node_bootstrap request` command to create
+The Mac does not have the exact machine-readable host binding yet. On FABRIC-WINDOWS-NODE, use the
+bundled `project_supervisor.fabric.windows_node_bootstrap request` command to create
 `mac-phase2-artifact-request.json` with the already-derived machine-binding SHA-256, exact
 Tailscale peer identity, HTTPS Serve origin, Windows build, and a bounded expiry. Do not include
 raw MachineGuid or any credential. Return that request to the Mac enrollment authority.

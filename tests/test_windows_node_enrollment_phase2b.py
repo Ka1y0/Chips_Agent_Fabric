@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 import zipfile
 from argparse import Namespace
 from datetime import UTC, datetime, timedelta
@@ -170,8 +171,18 @@ def test_request_bundle_and_receipt_schemas_validate_typed_contracts(
 def test_artifact_build_is_deterministic_closed_and_contains_migrations_through_0020(
     tmp_path: Path,
 ) -> None:
-    first = WindowsNodeArtifactBuilder(ROOT).build(tmp_path / "one")
-    second = WindowsNodeArtifactBuilder(ROOT).build(tmp_path / "two")
+    source = tmp_path / "dirty-source"
+    subprocess.run(
+        ("git", "clone", "--quiet", "--no-hardlinks", str(ROOT), str(source)),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    marker = source / "src/project_supervisor/__init__.py"
+    marker.write_text(marker.read_text(encoding="utf-8") + "\n# dirty-source-fixture\n")
+
+    first = WindowsNodeArtifactBuilder(source).build(tmp_path / "one")
+    second = WindowsNodeArtifactBuilder(source).build(tmp_path / "two")
 
     assert first.artifact_id == second.artifact_id
     assert first.artifact_path.read_bytes() == second.artifact_path.read_bytes()
