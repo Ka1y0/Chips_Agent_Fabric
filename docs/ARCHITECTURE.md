@@ -111,7 +111,10 @@ state, approve a RED action, or satisfy a definition of done by itself.
 |---|---|---|
 | Domain and state machine | Stable entities, enums, legal transitions | Provider CLI flags or UI state |
 | Scheduler | Hard constraints, deterministic scoring, explainable routing | Process execution or mutable global state |
+| Hybrid Engine | Explainable bounded workload decomposition and topology | Concrete Worker selection, authority, or dispatch |
+| Cluster DAG expander | Typed roles, dependencies, replicas, spawn-policy bounds, reviewer-independence constraints | Worker scoring, unbounded fanout/recursion, or lease bypass |
 | Capability fabric | Versioned provider-independent vocabulary, immutable Worker manifests, append-only health/quota/load observations | Provider identity, permission grants, or invented availability/cost |
+| Local-model profiler | Evidence-backed observed properties and conservative recommendations | Credential reads, endpoint probes during discovery, invented capacity, or silent setting changes |
 | Runtime | Dispatch, concurrency, cancellation, result orchestration | Credential acquisition or model-specific parsing |
 | Store | Migrations, durable state, event sequence, token hashes | Chat history as state or plaintext bearer tokens |
 | Native adapters | Process groups, streaming capture, provider parsing, redaction | Global scheduling, approval decisions, or unadvertised recovery semantics |
@@ -119,6 +122,7 @@ state, approve a RED action, or satisfy a definition of done by itself.
 | Node recovery monitor | Due-policy polling, fenced leases, checkpoints, typed runtime-start dispatch | Credentials, arbitrary commands, or implicit grants |
 | Verification | Deterministic acceptance checks and evidence | Subjective model self-attestation |
 | Interaction fabric | Structured semantic plans, resource fencing, observe/act/postverify loop, sanitized trajectories and skill hints | Prompt-derived authority, coordinate-first automation, or claims of an unimplemented OS/browser/VLM backend |
+| Project_Bridge | Optional bounded/hash-aware derived transfer and semantic support accounting | Canonical state, permissions, or mutation from model output |
 | REST/WebSocket API | Read-only projections, replay cursor, scoped observation | Arbitrary shell/filesystem/model access |
 | Cyber Office | Human-readable live observation | Canonical state or task mutation in V0 |
 

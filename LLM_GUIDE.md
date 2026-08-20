@@ -11,13 +11,19 @@ canonical SQLite/task/event/artifact state.
 ## Discover before acting
 
 1. Read `FABRIC_INTENT.md`, `CAPABILITIES.md`, `PROTOCOL.md`, and the relevant ADR/protocol.
-2. Run `python3 bootstrap/chips.py bootstrap --json` for credential-free local discovery.
+2. Run `chips-onboard --json` for a concise view, then
+   `python3 bootstrap/chips.py bootstrap --json` for credential-free local discovery.
 3. Treat every path/model/runtime as a candidate until a safe real contract gate verifies it.
 4. For existing initialized state, run `project-supervisor --json status`, `tasks`, and
    `logs --after SEQUENCE` against the operator-specified data directory.
 
 Do not assume an installed Worker is authenticated, online, eligible, reachable, or authorized.
 Bootstrap discovery does not test authentication, connectivity, listeners, or credentials.
+
+`project_supervisor.local_models` turns verified LM Studio, Ollama, llama.cpp, or explicitly
+configured loopback OpenAI-compatible observations into conservative recommendations. Observed
+capacity, recommendation, health, and freshness remain distinct; unknown context or parallel
+capacity stays unknown and unsafe runtime settings are never applied silently.
 
 ## Safe lifecycle
 

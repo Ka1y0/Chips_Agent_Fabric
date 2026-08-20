@@ -1,4 +1,13 @@
-# Deterministic Hybrid Engine
+# Deterministic routing and Hybrid topology planning
+
+`HybridEngine` decides **how** a workload is decomposed: single stage, primary/reviewer,
+bounded parallel panel, cheap-first escalation, or a role-aware DAG. `ClusterPlanner` expands that
+DAG under the canonical `SpawnPolicy` but leaves every `workerID` unset.
+
+`DeterministicScheduler` decides **which Worker** executes each stage from a frozen snapshot. It owns
+capability and parameter matching, locality, privacy, approval, availability, quota, cost, latency,
+quality, reliability, load, and stable tie-breaking. Neither Hybrid nor cluster planning may bypass
+the scheduler, acquire authority, or silently route privacy-sensitive work to remote capacity.
 
 ## Implemented V0
 
@@ -84,7 +93,7 @@ for every prerequisite to succeed. Failed/cancelled prerequisites block dependen
 IDs and states instead of leaving them indefinitely READY; independent Tasks can still launch in the
 same pass when separate Worker capacity exists.
 
-## Hybrid Engine V1 foundation
+## Hybrid routing-input foundation
 
 Normalized routing inputs include context requirement, node/model availability, observable quota,
 latency, configured cost score, historical reliability, node load, and expected quality. Missing

@@ -3,6 +3,18 @@
 All notable changes are documented here. The project follows semantic versioning
 for public protocol and package compatibility once a public release is tagged.
 
+## Unreleased
+
+- Publishes the newer V0.3 capability, execution, interaction, multi-node, and recovery architecture.
+- Adds read-only onboarding presets over the canonical bootstrap plan.
+- Adds evidence-backed local-model profiles with explicit unknown capacity and freshness.
+- Adds Hybrid Engine topology planning and bounded cluster DAG expansion while retaining scheduler
+  authority over concrete Worker selection.
+- Adds optional semantic Bridge transfer policy and typed support accounting without canonical
+  state or permission authority.
+- Adds duplicate-Worker scheduler rejection, platform-explicit credential tests, and isolated CI
+  quality/build/subprocess acceptance gates.
+
 ## 0.2.0-beta.1 — 2026-08-11 (package `0.2.0b1`)
 
 - Adds a durable autonomous evaluate, plan, dispatch, verify, and continue loop with

@@ -8,18 +8,20 @@ it never replaces canonical structured state. Do not call Cyber Office a “Supe
 
 1. [`FABRIC_INTENT.md`](FABRIC_INTENT.md) — purpose, authority, and operating philosophy.
 2. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — implemented boundaries and data flow.
-3. [`CAPABILITIES.md`](CAPABILITIES.md) — implemented, foundation, planned, and unsupported features.
-4. [`PROTOCOL.md`](PROTOCOL.md), [`docs/WORKER_PROTOCOL.md`](docs/WORKER_PROTOCOL.md), and
+3. [`docs/PERSONAL_INTELLIGENCE_FABRIC.md`](docs/PERSONAL_INTELLIGENCE_FABRIC.md) — direction and
+   permanent authority boundaries.
+4. [`CAPABILITIES.md`](CAPABILITIES.md) — implemented, foundation, planned, and unsupported features.
+5. [`PROTOCOL.md`](PROTOCOL.md), [`docs/WORKER_PROTOCOL.md`](docs/WORKER_PROTOCOL.md), and
    [`docs/NODE_PROTOCOL.md`](docs/NODE_PROTOCOL.md) — machine contracts.
-5. [`docs/TRUST_MODEL.md`](docs/TRUST_MODEL.md), [`docs/CAPABILITY_MODEL.md`](docs/CAPABILITY_MODEL.md),
+6. [`docs/TRUST_MODEL.md`](docs/TRUST_MODEL.md), [`docs/CAPABILITY_MODEL.md`](docs/CAPABILITY_MODEL.md),
    and [`SECURITY.md`](SECURITY.md) — authority and non-negotiable safety boundaries.
-6. [`docs/BOOTSTRAP.md`](docs/BOOTSTRAP.md) and
+7. [`docs/BOOTSTRAP.md`](docs/BOOTSTRAP.md) and
    [`docs/BOOTSTRAP_PROTOCOL.md`](docs/BOOTSTRAP_PROTOCOL.md) — inspect or bootstrap a machine.
-7. [`docs/LLM_OPERATIONS.md`](docs/LLM_OPERATIONS.md), [`docs/RECOVERY.md`](docs/RECOVERY.md), and
+8. [`docs/LLM_OPERATIONS.md`](docs/LLM_OPERATIONS.md), [`docs/RECOVERY.md`](docs/RECOVERY.md), and
    [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) — operate, recover, and diagnose.
-8. [`docs/AUTONOMOUS_ITERATION.md`](docs/AUTONOMOUS_ITERATION.md) — persisted Goal loops,
+9. [`docs/AUTONOMOUS_ITERATION.md`](docs/AUTONOMOUS_ITERATION.md) — persisted Goal loops,
    human controls, guards, and restart semantics.
-9. [`docs/AUTONOMOUS_HOST.md`](docs/AUTONOMOUS_HOST.md) — production Goal hosting, exact operator
+10. [`docs/AUTONOMOUS_HOST.md`](docs/AUTONOMOUS_HOST.md) — production Goal hosting, exact operator
    commands, lease ownership, resource audits, and process-lifetime requirements.
 
 Documentation uses these maturity labels: **IMPLEMENTED**, **FOUNDATION**, **PLANNED**, and
@@ -40,6 +42,7 @@ release evidence before claiming a gate.
 Run the portable, read-only discovery command from the repository root:
 
 ```sh
+chips-onboard --json
 python3 bootstrap/chips.py bootstrap --json
 ```
 
@@ -58,6 +61,10 @@ distributable source. The bootstrap command refuses to overwrite a non-empty out
 Before changing code, read `LLM_GUIDE.md`, the relevant protocol, and the relevant ADR. Preserve
 provider-specific formats below adapter boundaries and preserve the V0 baseline behavior. Use small,
 compatibility-preserving changes with deterministic tests.
+
+To adapt a Worker, extend the provider-independent capability catalog/manifest, keep provider
+details below the adapter boundary, route through `DeterministicScheduler`, and add protocol,
+recovery, cancellation, authorization, and privacy tests before claiming runtime executability.
 
 Never:
 

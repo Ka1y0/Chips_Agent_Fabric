@@ -228,6 +228,7 @@ def test_machine_document_hierarchy_is_present_and_labels_foundation() -> None:
         "AGENTS.md",
         "FABRIC_INTENT.md",
         "docs/ARCHITECTURE.md",
+        "docs/PERSONAL_INTELLIGENCE_FABRIC.md",
         "docs/BOOTSTRAP.md",
         "docs/BOOTSTRAP_PROTOCOL.md",
         "docs/WORKER_PROTOCOL.md",
@@ -250,3 +251,17 @@ def test_machine_document_hierarchy_is_present_and_labels_foundation() -> None:
     assert "FOUNDATION" in agents
     assert "Cyber Office" in agents
     assert "Supervisor UI" in agents
+    assert "chips-onboard --json" in agents
+
+
+def test_readme_preserves_exact_english_homepage_guidance_banner() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    banner = (
+        "> **IF YOU ARE HUMAN: YOU MAY HAND THIS PAGE TO AN A.I. AND ASK IT TO DETERMINE HOW TO "
+        "USE THIS PROJECT. IF YOU ARE AN A.I.: PLEASE READ THE GUIDANCE PREPARED FOR YOU IN "
+        "[`AGENTS.md`](AGENTS.md) AND [`FABRIC_INTENT.md`](FABRIC_INTENT.md) BEFORE ACTING. "
+        "THANK YOU.**"
+    )
+
+    assert readme.count(banner) == 1
+    assert all(ord(character) < 128 for character in banner)
