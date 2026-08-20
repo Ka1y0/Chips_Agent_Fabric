@@ -104,17 +104,20 @@ def test_scheduler_rejects_duplicate_worker_ids_before_scoring() -> None:
         )
 
 
-def test_scheduler_rejects_resource_evidence_for_unknown_workers() -> None:
-    scheduler = DeterministicScheduler()
+def test_scheduler_preserves_evidence_for_workers_prefiltered_upstream() -> None:
+    decision = DeterministicScheduler().schedule(
+        task_id="prefiltered-evidence",
+        requirements=coding_requirements(),
+        topology=ExecutionTopology.SINGLE,
+        workers=[worker("known")],
+        resource_evidence=[resource_evidence("prefiltered")],
+    )
 
-    with pytest.raises(ValueError, match="unknown Workers: missing"):
-        scheduler.schedule(
-            task_id="unknown-evidence",
-            requirements=coding_requirements(),
-            topology=ExecutionTopology.SINGLE,
-            workers=[worker("known")],
-            resource_evidence=[resource_evidence("missing")],
-        )
+    assert decision.selected_worker_ids == ("known",)
+    assert [item.worker_id for item in decision.candidates] == ["known"]
+    assert [
+        item["workerID"] for item in decision.explanation["resourceEvidence"]
+    ] == ["prefiltered"]
 
 
 def test_parallel_panel_rejects_non_positive_size() -> None:

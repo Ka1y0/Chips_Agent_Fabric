@@ -72,15 +72,9 @@ class DeterministicScheduler:
             raise ValueError("parallel panel size must be at least one")
 
         ordered_workers = self._workers(workers)
+        # Upstream resource guards may prefilter a Worker while retaining its quota evidence.
+        # Keep that evidence in the explanation for auditability, but score only present Workers.
         evidence_by_worker = self._resource_evidence(resource_evidence)
-        unknown_evidence = sorted(
-            set(evidence_by_worker) - {worker.id for worker in ordered_workers}
-        )
-        if unknown_evidence:
-            raise ValueError(
-                "resource routing evidence references unknown Workers: "
-                + ", ".join(unknown_evidence)
-            )
 
         eligible: list[WorkerSnapshot] = []
         rejected: list[Rejection] = []

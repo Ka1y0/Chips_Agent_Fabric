@@ -5,6 +5,7 @@ from collections.abc import Sequence
 
 import pytest
 
+import project_supervisor.credentials as credentials_module
 from project_supervisor.credentials import (
     ENV_LOCAL_WORKER_TOKEN,
     KEYCHAIN_SERVICE,
@@ -33,7 +34,10 @@ def test_short_lived_environment_token_is_preferred_and_never_shells_out() -> No
     assert token == SECRET
 
 
-def test_keychain_lookup_uses_a_fixed_argument_vector_without_the_secret() -> None:
+def test_keychain_lookup_uses_a_fixed_argument_vector_without_the_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(credentials_module.sys, "platform", "darwin")
     seen: list[Sequence[str]] = []
 
     def runner(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
@@ -62,7 +66,12 @@ def test_keychain_lookup_uses_a_fixed_argument_vector_without_the_secret() -> No
         {"returncode": 0, "stdout": "   \n"},
     ],
 )
-def test_missing_or_blank_credential_fails_closed(outcome: dict[str, object]) -> None:
+def test_missing_or_blank_keychain_credential_fails_closed(
+    outcome: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(credentials_module.sys, "platform", "darwin")
+
     def runner(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
         return completed(command, **outcome)  # type: ignore[arg-type]
 
@@ -70,7 +79,11 @@ def test_missing_or_blank_credential_fails_closed(outcome: dict[str, object]) ->
         local_worker_token(account="worker-node-01", environ={}, runner=runner)
 
 
-def test_blank_environment_token_falls_back_to_the_keychain() -> None:
+def test_blank_environment_token_falls_back_to_the_keychain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(credentials_module.sys, "platform", "darwin")
+
     def runner(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
         return completed(command, stdout=SECRET)
 
@@ -82,7 +95,11 @@ def test_blank_environment_token_falls_back_to_the_keychain() -> None:
     assert token == SECRET
 
 
-def test_keychain_failure_is_reported_without_leaking_process_output() -> None:
+def test_keychain_failure_is_reported_without_leaking_process_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(credentials_module.sys, "platform", "darwin")
+
     def runner(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
         raise subprocess.TimeoutExpired(list(command), 15, output=SECRET)
 
@@ -91,3 +108,15 @@ def test_keychain_failure_is_reported_without_leaking_process_output() -> None:
 
     assert SECRET not in str(error.value)
     assert error.value.__cause__ is None
+
+
+def test_non_macos_hosts_fail_closed_without_invoking_keychain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(credentials_module.sys, "platform", "linux")
+
+    def runner(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        raise AssertionError(f"non-macOS host must not invoke Keychain: {command}")
+
+    with pytest.raises(CredentialError, match="no Local Worker bearer available"):
+        local_worker_token(account="worker-node-01", environ={}, runner=runner)

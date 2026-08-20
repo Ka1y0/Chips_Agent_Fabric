@@ -5,10 +5,12 @@ for public protocol and package compatibility once a public release is tagged.
 
 ## Unreleased
 
-- Rejects duplicate worker identities and resource evidence for unknown workers before scoring,
-  preventing ambiguous or internally inconsistent routing decisions.
+- Rejects duplicate worker identities before scoring while preserving resource evidence for Workers
+  prefiltered by upstream quota guards, keeping decisions unambiguous without losing audit context.
 - Rejects non-positive parallel panel sizes instead of allowing Python slicing semantics to produce
   nonsensical selections.
+- Makes Keychain credential tests explicitly platform-aware, covering macOS lookup and non-macOS
+  fail-closed behavior.
 - Adds GitHub Actions quality gates for linting, the test suite, and package builds on Python 3.12.
 
 ## 0.2.0-beta.1 — 2026-08-11 (package `0.2.0b1`)
