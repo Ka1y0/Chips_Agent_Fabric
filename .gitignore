@@ -1,0 +1,27 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+local-state/
+logs/
+worktrees/
+artifacts/goal-run/live-state/
+artifacts/goal-run/dist/
+# Real-gate runtime state and superseded Cyber Office captures stay local; the final sanitized
+# projections/screenshots are explicitly tracked by the run manifest.
+artifacts/goal-run/local-worker-remote-v0/live-state/
+artifacts/goal-run/local-worker-remote-v0/cyber-office-events.json
+artifacts/goal-run/local-worker-remote-v0/cyber-office-nodes.json
+artifacts/goal-run/local-worker-remote-v0/cyber-office-tasks.json
+artifacts/goal-run/local-worker-remote-v0/cyber-office-workers.json
+artifacts/goal-run/local-worker-remote-v0/cyber-office-real-final.png
+# Harness session transcripts are runtime logs, not curated evidence.
+artifacts/goal-run/claude-*-stream.jsonl
+artifacts/goal-run/claude-*-stderr.log
+.env
+.DS_Store

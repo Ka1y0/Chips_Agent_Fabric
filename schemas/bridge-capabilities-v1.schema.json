@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chips-agent-fabric.invalid/schemas/bridge-capabilities-v1.schema.json",
+  "title": "CHIPS Agent Fabric Bridge Capabilities v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["peerID", "versions", "codecs", "maxPayloadBytes", "available"],
+  "properties": {
+    "peerID": {"type": "string", "minLength": 1},
+    "versions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "codecs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "maxPayloadBytes": {"type": "integer", "minimum": 1},
+    "available": {"type": "boolean"}
+  }
+}

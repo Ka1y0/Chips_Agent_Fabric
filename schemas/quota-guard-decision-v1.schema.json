@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chips-agent-fabric.invalid/schemas/quota-guard-decision-v1.schema.json",
+  "title": "CHIPS Agent Fabric Quota Guard Decision v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "dispatchAllowed", "orderedWorkerIDs", "avoided", "poolStates", "evidenceByWorker",
+    "explanation"
+  ],
+  "properties": {
+    "dispatchAllowed": {"type": "boolean"},
+    "orderedWorkerIDs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "avoided": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "minLength": 1}
+    },
+    "poolStates": {
+      "type": "object",
+      "additionalProperties": {
+        "enum": ["available", "warning", "critical", "exhausted", "unknown"]
+      }
+    },
+    "evidenceByWorker": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workerID", "quotaPoolID", "provider", "quotaState", "freshness", "provenance",
+          "source", "confidence", "observedAt", "healthScore", "reason"
+        ],
+        "properties": {
+          "workerID": {"type": "string", "minLength": 1},
+          "quotaPoolID": {"type": "string", "minLength": 1},
+          "provider": {"type": "string", "minLength": 1},
+          "quotaState": {
+            "enum": ["available", "warning", "critical", "exhausted", "unknown"]
+          },
+          "freshness": {"enum": ["fresh", "stale", "unknown"]},
+          "provenance": {
+            "enum": ["PROVIDER_REPORTED", "LOCALLY_MEASURED", "INFERRED", "UNKNOWN"]
+          },
+          "source": {"type": "string", "minLength": 1},
+          "confidence": {
+            "enum": ["exact", "verified", "providerReported", "inferred", "unknown"]
+          },
+          "observedAt": {"type": ["string", "null"], "format": "date-time"},
+          "healthScore": {"type": "number", "minimum": 0, "maximum": 1},
+          "reason": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "explanation": {"type": "string", "minLength": 1}
+  }
+}

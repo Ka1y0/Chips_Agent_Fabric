@@ -1,0 +1,69 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "project-supervisor"
+version = "0.2.0b1"
+description = "Local-first, event-driven supervisor for heterogeneous AI workers"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+authors = [{ name = "CHIPS Agent Fabric" }]
+dependencies = [
+  "fastapi>=0.115,<1",
+  "httpx>=0.28,<1",
+  "jsonschema>=4.23,<5",
+  "pydantic>=2.10,<3",
+  "uvicorn[standard]>=0.34,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<10",
+  "pytest-asyncio>=0.25,<2",
+  "ruff>=0.9,<1",
+]
+
+[project.scripts]
+chips = "bootstrap.chips:main"
+project-supervisor = "project_supervisor.cli:main"
+
+[tool.hatch.build]
+exclude = [
+  "/.agents",
+  "/.codex",
+  "/.git",
+  "/.pytest_cache",
+  "/.ruff_cache",
+  "/.venv",
+  "/artifacts",
+  "/build",
+  "/CyberOffice",
+  "/CyberIsland",
+  "/dist",
+  "/docs/CLAUDE_GOAL_HANDOFF.md",
+  "/ArtLab",
+  "/local-state",
+  "/logs",
+  "/scripts/run_local_worker_acceptance.py",
+  "/scripts/run_real_acceptance.py",
+  "/scripts/run_remote_worker_gates.py",
+  "/worktrees",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/project_supervisor", "bootstrap"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chips-agent-fabric.invalid/schemas/resource-usage-aggregate-v1.schema.json",
+  "title": "CHIPS Agent Fabric Resource Usage Aggregate v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "scope", "auditCount", "snapshotCount", "snapshotsByProvider", "snapshotsByModel",
+    "snapshotsByWorker", "snapshotsByAccountScope", "snapshotsByQuotaPool", "taskCalls",
+    "inputTokens", "outputTokens", "cachedTokens", "cost", "latestByQuotaPool"
+  ],
+  "properties": {
+    "scope": {"type": "object"},
+    "auditCount": {"type": "integer", "minimum": 0},
+    "snapshotCount": {"type": "integer", "minimum": 0},
+    "snapshotsByProvider": {"$ref": "#/$defs/countMap"},
+    "snapshotsByModel": {"$ref": "#/$defs/countMap"},
+    "snapshotsByWorker": {"$ref": "#/$defs/countMap"},
+    "snapshotsByAccountScope": {"$ref": "#/$defs/countMap"},
+    "snapshotsByQuotaPool": {"$ref": "#/$defs/countMap"},
+    "taskCalls": {"$ref": "#/$defs/metricAggregate"},
+    "inputTokens": {"$ref": "#/$defs/metricAggregate"},
+    "outputTokens": {"$ref": "#/$defs/metricAggregate"},
+    "cachedTokens": {"$ref": "#/$defs/metricAggregate"},
+    "cost": {"$ref": "#/$defs/metricAggregate"},
+    "latestByQuotaPool": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "resource-usage-snapshot-v1.schema.json"
+      }
+    }
+  },
+  "$defs": {
+    "countMap": {
+      "type": "object",
+      "additionalProperties": {"type": "integer", "minimum": 1}
+    },
+    "metricAggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["valuesByUnit", "knownCount", "unknownCount"],
+      "properties": {
+        "valuesByUnit": {
+          "type": "object",
+          "additionalProperties": {"type": "number", "minimum": 0}
+        },
+        "knownCount": {"type": "integer", "minimum": 0},
+        "unknownCount": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

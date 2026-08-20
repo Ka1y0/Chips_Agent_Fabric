@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chips-agent-fabric.invalid/schemas/bootstrap-run-v1.schema.json",
+  "title": "CHIPS Agent Fabric Durable Bootstrap Run v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runID",
+    "state",
+    "currentPhase",
+    "planDigest",
+    "profileDigest",
+    "createdAt",
+    "updatedAt",
+    "completedAt",
+    "hostMutationsPerformed",
+    "privilegedExecutionImplemented",
+    "auditChainValid",
+    "steps",
+    "audit"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "runID": {"type": "string", "minLength": 1},
+    "state": {"enum": ["active", "waiting", "failed", "complete"]},
+    "currentPhase": {
+      "type": ["string", "null"],
+      "enum": ["DISCOVER", "REVIEW", "TRUST", "PREPARE", "CONFIGURE", "ENROLL", "VERIFY", "COMMIT", null]
+    },
+    "planDigest": {"$ref": "#/$defs/digest"},
+    "profileDigest": {"$ref": "#/$defs/digest"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "updatedAt": {"type": "string", "format": "date-time"},
+    "completedAt": {"type": ["string", "null"], "format": "date-time"},
+    "hostMutationsPerformed": {"const": false},
+    "privilegedExecutionImplemented": {"const": false},
+    "auditChainValid": {"type": "boolean"},
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "stepID", "ordinal", "phase", "action", "state", "mutating",
+          "requiredCapability", "dependsOn", "reason", "resultDigest",
+          "authorizationReference", "updatedAt"
+        ],
+        "properties": {
+          "stepID": {"type": "string", "minLength": 1},
+          "ordinal": {"type": "integer", "minimum": 0},
+          "phase": {"type": "string", "minLength": 1},
+          "action": {"type": "string", "minLength": 1},
+          "state": {
+            "enum": ["pending", "ready", "awaitingReview", "awaitingApproval", "satisfied", "failed", "blocked"]
+          },
+          "mutating": {"type": "boolean"},
+          "requiredCapability": {"type": ["string", "null"]},
+          "dependsOn": {"type": "array", "items": {"type": "string"}},
+          "reason": {"type": "string", "minLength": 1},
+          "resultDigest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+          "authorizationReference": {"type": ["string", "null"]},
+          "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      }
+    },
+    "audit": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sequence", "eventID", "stepID", "kind", "actor", "summary", "payload",
+          "previousHash", "eventHash", "createdAt"
+        ],
+        "properties": {
+          "sequence": {"type": "integer", "minimum": 1},
+          "eventID": {"type": "string", "minLength": 1},
+          "stepID": {"type": ["string", "null"]},
+          "kind": {"type": "string", "minLength": 1},
+          "actor": {"type": "string", "minLength": 1},
+          "summary": {"type": "string", "minLength": 1},
+          "payload": {"type": "object"},
+          "previousHash": {"$ref": "#/$defs/digest"},
+          "eventHash": {"$ref": "#/$defs/digest"},
+          "createdAt": {"type": "string", "format": "date-time"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  }
+}

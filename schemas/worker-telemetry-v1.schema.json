@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chips-agent-fabric.invalid/schemas/worker-telemetry-v1.schema.json",
+  "title": "CHIPS Agent Fabric Worker Telemetry v1",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "telemetry": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "value", "confidence"],
+          "properties": {
+            "state": {"const": "known"},
+            "value": {"type": "number"},
+            "confidence": {"enum": ["exact", "verified", "providerReported", "inferred", "unknown"]}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "reason", "confidence"],
+          "properties": {
+            "state": {"const": "unavailable"},
+            "reason": {"enum": ["notReported", "notSupported", "permissionDenied", "stale", "offline", "unknown"]},
+            "confidence": {"enum": ["exact", "verified", "providerReported", "inferred", "unknown"]}
+          }
+        }
+      ]
+    }
+  },
+  "required": ["observedAt", "latencyMs", "remainingQuota", "resetSeconds", "costUSD", "attributes"],
+  "properties": {
+    "observedAt": {"type": "string", "format": "date-time"},
+    "latencyMs": {"$ref": "#/$defs/telemetry"},
+    "remainingQuota": {"$ref": "#/$defs/telemetry"},
+    "resetSeconds": {"$ref": "#/$defs/telemetry"},
+    "costUSD": {"$ref": "#/$defs/telemetry"},
+    "attributes": {
+      "type": "object",
+      "additionalProperties": {"type": ["string", "integer", "number", "boolean"]}
+    }
+  }
+}

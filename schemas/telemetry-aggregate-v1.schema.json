@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chips-agent-fabric.invalid/schemas/telemetry-aggregate-v1.schema.json",
+  "title": "CHIPS Agent Fabric Telemetry Aggregate v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "scope", "callCount", "callsByWorker", "callsByProvider", "callsByModel", "callsByNode",
+    "callsByOutcome", "callsByTaskRole", "retryCallCount", "retryAttemptCount", "fallbackCount",
+    "duration", "inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "cost",
+    "remainingQuota", "codexOffload", "qualityAdjustedOffload"
+  ],
+  "properties": {
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["goalID", "taskID"],
+      "properties": {
+        "goalID": {"type": ["string", "null"], "minLength": 1},
+        "taskID": {"type": ["string", "null"], "minLength": 1}
+      }
+    },
+    "callCount": {"type": "integer", "minimum": 0},
+    "callsByWorker": {"$ref": "#/$defs/countMap"},
+    "callsByProvider": {"$ref": "#/$defs/countMap"},
+    "callsByModel": {"$ref": "#/$defs/countMap"},
+    "callsByNode": {"$ref": "#/$defs/countMap"},
+    "callsByOutcome": {"$ref": "#/$defs/countMap"},
+    "callsByTaskRole": {"$ref": "#/$defs/countMap"},
+    "retryCallCount": {"type": "integer", "minimum": 0},
+    "retryAttemptCount": {"type": "integer", "minimum": 0},
+    "fallbackCount": {"type": "integer", "minimum": 0},
+    "duration": {"$ref": "#/$defs/metricAggregate"},
+    "inputTokens": {"$ref": "#/$defs/metricAggregate"},
+    "outputTokens": {"$ref": "#/$defs/metricAggregate"},
+    "cacheReadTokens": {"$ref": "#/$defs/metricAggregate"},
+    "cacheWriteTokens": {"$ref": "#/$defs/metricAggregate"},
+    "cost": {"$ref": "#/$defs/metricAggregate"},
+    "remainingQuota": {"$ref": "#/$defs/latestMetric"},
+    "codexOffload": {"$ref": "#/$defs/offload"},
+    "qualityAdjustedOffload": {"$ref": "#/$defs/qualityOffload"}
+  },
+  "$defs": {
+    "countMap": {
+      "type": "object",
+      "additionalProperties": {"type": "integer", "minimum": 1}
+    },
+    "unavailableReason": {
+      "enum": ["notReported", "notSupported", "permissionDenied", "stale", "offline", "unknown"]
+    },
+    "metric": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "value", "confidence", "unit"],
+          "properties": {
+            "state": {"const": "known"},
+            "value": {"type": "number", "minimum": 0},
+            "confidence": {
+              "enum": ["exact", "verified", "providerReported", "inferred"]
+            },
+            "unit": {"type": "string", "minLength": 1}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "reason", "confidence", "unit"],
+          "properties": {
+            "state": {"const": "unavailable"},
+            "reason": {"$ref": "#/$defs/unavailableReason"},
+            "confidence": {"const": "unknown"},
+            "unit": {"type": "null"}
+          }
+        }
+      ]
+    },
+    "metricAggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observedSum", "knownCount", "unavailableCount"],
+      "properties": {
+        "observedSum": {"$ref": "#/$defs/metric"},
+        "knownCount": {"type": "integer", "minimum": 0},
+        "unavailableCount": {"type": "integer", "minimum": 0}
+      }
+    },
+    "latestMetric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["latest", "knownCount", "unavailableCount", "observedAt"],
+      "properties": {
+        "latest": {"$ref": "#/$defs/metric"},
+        "knownCount": {"type": "integer", "minimum": 0},
+        "unavailableCount": {"type": "integer", "minimum": 0},
+        "observedAt": {"type": ["string", "null"], "format": "date-time"}
+      }
+    },
+    "offload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ratio", "codexCalls", "offloadedCalls", "unknownCalls"],
+      "properties": {
+        "ratio": {"$ref": "#/$defs/metric"},
+        "codexCalls": {"type": "integer", "minimum": 0},
+        "offloadedCalls": {"type": "integer", "minimum": 0},
+        "unknownCalls": {"type": "integer", "minimum": 0}
+      }
+    },
+    "qualityOffload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ratio", "scoredCodexCalls", "scoredOffloadedCalls", "unscoredCalls"],
+      "properties": {
+        "ratio": {"$ref": "#/$defs/metric"},
+        "scoredCodexCalls": {"type": "integer", "minimum": 0},
+        "scoredOffloadedCalls": {"type": "integer", "minimum": 0},
+        "unscoredCalls": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chips-agent-fabric.invalid/schemas/worker-contract-v1.schema.json",
+  "title": "CHIPS Agent Fabric Worker Contract v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocolVersion", "identity", "models", "defaultModelID", "capabilities", "permissions", "operations", "observability"],
+  "properties": {
+    "protocolVersion": {"const": "1.0"},
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workerID", "nodeID", "provider", "implementation"],
+      "properties": {
+        "workerID": {"type": "string", "minLength": 1},
+        "nodeID": {"type": "string", "minLength": 1},
+        "provider": {"type": "string", "minLength": 1},
+        "implementation": {"type": "string", "minLength": 1}
+      }
+    },
+    "models": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "displayName", "contextLimitTokens", "capabilities"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "displayName": {"type": "string", "minLength": 1},
+          "contextLimitTokens": {"type": ["integer", "null"], "minimum": 1},
+          "capabilities": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+        }
+      }
+    },
+    "defaultModelID": {"type": ["string", "null"]},
+    "capabilities": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowed", "denied"],
+      "properties": {
+        "allowed": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "denied": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "operations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["execute", "stream", "cancel", "sessions"],
+      "properties": {
+        "execute": {"const": true},
+        "stream": {"type": "boolean"},
+        "cancel": {"type": "boolean"},
+        "sessions": {"type": "boolean"}
+      }
+    },
+    "observability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cost", "quota"],
+      "properties": {
+        "cost": {"enum": ["exact", "estimated", "unavailable"]},
+        "quota": {"enum": ["exact", "estimated", "unavailable"]}
+      }
+    }
+  }
+}

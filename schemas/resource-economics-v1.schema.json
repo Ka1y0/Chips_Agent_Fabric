@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chips-agent-fabric.invalid/schemas/resource-economics-v1.schema.json",
+  "title": "CHIPS Agent Fabric Resource Economics v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "scope", "tokenDefinition", "codexOffloadRatio", "qualityAdjustedOffload",
+    "tokensPerSuccessfulGoal", "tokensPerAcceptedTask", "successfulGoalCount",
+    "acceptedTaskCount", "coverage"
+  ],
+  "properties": {
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projectID", "goalID"],
+      "properties": {
+        "projectID": {"type": ["string", "null"], "minLength": 1},
+        "goalID": {"type": ["string", "null"], "minLength": 1}
+      }
+    },
+    "tokenDefinition": {"const": "inputPlusOutput"},
+    "codexOffloadRatio": {"$ref": "#/$defs/metric"},
+    "qualityAdjustedOffload": {"$ref": "#/$defs/metric"},
+    "tokensPerSuccessfulGoal": {"$ref": "#/$defs/metric"},
+    "tokensPerAcceptedTask": {"$ref": "#/$defs/metric"},
+    "successfulGoalCount": {"type": "integer", "minimum": 0},
+    "acceptedTaskCount": {"type": "integer", "minimum": 0},
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "invocationCount", "completeInvocationCount", "unknownInvocationCount",
+        "successfulGoalsWithCompleteTelemetry", "acceptedTasksWithCompleteTelemetry",
+        "codexCallCount", "offloadedCallCount", "unknownExecutorCallCount",
+        "scoredCallCount", "unscoredCallCount"
+      ],
+      "properties": {
+        "invocationCount": {"type": "integer", "minimum": 0},
+        "completeInvocationCount": {"type": "integer", "minimum": 0},
+        "unknownInvocationCount": {"type": "integer", "minimum": 0},
+        "successfulGoalsWithCompleteTelemetry": {"type": "integer", "minimum": 0},
+        "acceptedTasksWithCompleteTelemetry": {"type": "integer", "minimum": 0},
+        "codexCallCount": {"type": "integer", "minimum": 0},
+        "offloadedCallCount": {"type": "integer", "minimum": 0},
+        "unknownExecutorCallCount": {"type": "integer", "minimum": 0},
+        "scoredCallCount": {"type": "integer", "minimum": 0},
+        "unscoredCallCount": {"type": "integer", "minimum": 0}
+      }
+    }
+  },
+  "$defs": {
+    "metric": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "value", "unit", "provenance"],
+          "properties": {
+            "state": {"const": "known"},
+            "value": {"type": "number", "minimum": 0},
+            "unit": {"enum": ["ratio", "tokens"]},
+            "provenance": {"enum": ["PROVIDER_REPORTED", "LOCALLY_MEASURED", "INFERRED"]}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "reason", "unit", "provenance"],
+          "properties": {
+            "state": {"const": "unavailable"},
+            "reason": {
+              "enum": ["notReported", "notSupported", "permissionDenied", "stale", "offline", "unknown"]
+            },
+            "unit": {"type": "null"},
+            "provenance": {"const": "UNKNOWN"}
+          }
+        }
+      ]
+    }
+  }
+}

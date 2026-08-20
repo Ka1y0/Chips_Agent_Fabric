@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chips-agent-fabric.invalid/schemas/capability-grant-v1.schema.json",
+  "title": "CHIPS Agent Fabric Capability Grant v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["grantID", "capability", "subject", "requestedBy", "taskID", "issuedBy", "issuedAt", "expiresAt", "state", "constraints", "revokedAt", "revokedBy"],
+  "properties": {
+    "grantID": {"type": "string", "minLength": 1},
+    "capability": {"type": "string", "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)+$"},
+    "subject": {"type": "string", "minLength": 1},
+    "requestedBy": {"type": "string", "minLength": 1},
+    "taskID": {"type": "string", "minLength": 1},
+    "issuedBy": {"type": "string", "minLength": 1},
+    "issuedAt": {"type": "string", "format": "date-time"},
+    "expiresAt": {"type": ["string", "null"], "format": "date-time"},
+    "state": {"enum": ["active", "revoked", "expired"]},
+    "constraints": {"type": "object", "additionalProperties": {"type": "string"}},
+    "revokedAt": {"type": ["string", "null"], "format": "date-time"},
+    "revokedBy": {"type": ["string", "null"]}
+  }
+}
