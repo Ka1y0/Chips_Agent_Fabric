@@ -99,9 +99,10 @@ class DeterministicScheduler:
         resource_evidence: Iterable[ResourceRoutingEvidence] = (),
     ) -> RoutingDecision:
         evidence_by_worker = self._resource_evidence(resource_evidence)
+        ordered_workers = self._workers(workers)
         eligible: list[WorkerSnapshot] = []
         rejected: list[Rejection] = []
-        for worker in sorted(workers, key=lambda item: item.id):
+        for worker in ordered_workers:
             reasons = self._hard_constraints(requirements, worker)
             if reasons:
                 rejected.extend(reasons)
@@ -474,6 +475,21 @@ class DeterministicScheduler:
         denominator = sum(weights.values())
         score = sum(components[key] * weights[key] for key in components) / denominator
         return CandidateScore(worker_id=worker.id, score=round(score, 9), components=components)
+
+    @staticmethod
+    def _workers(values: Iterable[WorkerSnapshot]) -> tuple[WorkerSnapshot, ...]:
+        result: list[WorkerSnapshot] = []
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for value in values:
+            if value.id in seen:
+                duplicates.add(value.id)
+            else:
+                seen.add(value.id)
+            result.append(value)
+        if duplicates:
+            raise ValueError("workers must be unique by ID: " + ", ".join(sorted(duplicates)))
+        return tuple(sorted(result, key=lambda item: item.id))
 
     @staticmethod
     def _resource_evidence(

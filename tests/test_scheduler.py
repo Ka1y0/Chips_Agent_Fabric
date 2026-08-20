@@ -1,3 +1,5 @@
+import pytest
+
 from project_supervisor.domain import (
     ApprovalState,
     ExecutionTopology,
@@ -12,6 +14,7 @@ from project_supervisor.domain import (
     WorkerSnapshot,
     WorkerState,
 )
+from project_supervisor.hybrid import ResourceRoutingEvidence
 from project_supervisor.scheduler import DeterministicScheduler
 
 
@@ -73,6 +76,44 @@ def test_scheduler_is_deterministic_and_uses_id_tie_break() -> None:
     )
     assert first == second
     assert first.selected_worker_ids == ("worker-a",)
+
+
+def test_scheduler_rejects_duplicate_worker_ids_before_scoring() -> None:
+    duplicate = worker("duplicate")
+    with pytest.raises(ValueError, match="workers must be unique by ID: duplicate"):
+        DeterministicScheduler().schedule(
+            task_id="duplicate-workers",
+            requirements=coding_requirements(),
+            topology=ExecutionTopology.PARALLEL_PANEL,
+            workers=(duplicate, duplicate),
+        )
+
+
+def test_scheduler_preserves_evidence_for_workers_prefiltered_upstream() -> None:
+    evidence = ResourceRoutingEvidence(
+        worker_id="prefiltered",
+        quota_pool_id="test-pool",
+        provider="anthropic",
+        quota_state="available",
+        freshness="fresh",
+        provenance="PROVIDER_REPORTED",
+        source="test",
+        confidence="verified",
+        health_score=1.0,
+    )
+    decision = DeterministicScheduler().schedule(
+        task_id="prefiltered-evidence",
+        requirements=coding_requirements(),
+        topology=ExecutionTopology.SINGLE,
+        workers=(worker("known"),),
+        resource_evidence=(evidence,),
+    )
+
+    assert decision.selected_worker_ids == ("known",)
+    assert [item.worker_id for item in decision.candidates] == ["known"]
+    assert [item["workerID"] for item in decision.explanation["resourceEvidence"]] == [
+        "prefiltered"
+    ]
 
 
 def test_local_worker_cannot_write_code_even_if_capability_claims_it() -> None:
