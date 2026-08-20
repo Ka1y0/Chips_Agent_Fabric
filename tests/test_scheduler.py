@@ -1,3 +1,5 @@
+import pytest
+
 from project_supervisor.domain import (
     ApprovalState,
     ExecutionTopology,
@@ -12,6 +14,7 @@ from project_supervisor.domain import (
     WorkerSnapshot,
     WorkerState,
 )
+from project_supervisor.hybrid import ResourceRoutingEvidence
 from project_supervisor.scheduler import DeterministicScheduler
 
 
@@ -56,6 +59,20 @@ def coding_requirements(**changes: object) -> TaskRequirements:
     return TaskRequirements(**values)
 
 
+def resource_evidence(worker_id: str) -> ResourceRoutingEvidence:
+    return ResourceRoutingEvidence(
+        worker_id=worker_id,
+        quota_pool_id="test-pool",
+        provider="anthropic",
+        quota_state="available",
+        freshness="fresh",
+        provenance="PROVIDER_REPORTED",
+        source="test",
+        confidence="verified",
+        health_score=1.0,
+    )
+
+
 def test_scheduler_is_deterministic_and_uses_id_tie_break() -> None:
     scheduler = DeterministicScheduler()
     workers = [worker("worker-b"), worker("worker-a")]
@@ -73,6 +90,43 @@ def test_scheduler_is_deterministic_and_uses_id_tie_break() -> None:
     )
     assert first == second
     assert first.selected_worker_ids == ("worker-a",)
+
+
+def test_scheduler_rejects_duplicate_worker_ids_before_scoring() -> None:
+    scheduler = DeterministicScheduler()
+
+    with pytest.raises(ValueError, match="workers must be unique by ID: duplicate"):
+        scheduler.schedule(
+            task_id="duplicate-workers",
+            requirements=coding_requirements(),
+            topology=ExecutionTopology.PARALLEL_PANEL,
+            workers=[worker("duplicate", quality=0.9), worker("duplicate", quality=0.1)],
+        )
+
+
+def test_scheduler_rejects_resource_evidence_for_unknown_workers() -> None:
+    scheduler = DeterministicScheduler()
+
+    with pytest.raises(ValueError, match="unknown Workers: missing"):
+        scheduler.schedule(
+            task_id="unknown-evidence",
+            requirements=coding_requirements(),
+            topology=ExecutionTopology.SINGLE,
+            workers=[worker("known")],
+            resource_evidence=[resource_evidence("missing")],
+        )
+
+
+def test_parallel_panel_rejects_non_positive_size() -> None:
+    scheduler = DeterministicScheduler()
+
+    with pytest.raises(ValueError, match="parallel panel size must be at least one"):
+        scheduler.schedule(
+            task_id="invalid-panel",
+            requirements=coding_requirements(panel_size=0),
+            topology=ExecutionTopology.PARALLEL_PANEL,
+            workers=[worker("worker-a")],
+        )
 
 
 def test_local_worker_cannot_write_code_even_if_capability_claims_it() -> None:

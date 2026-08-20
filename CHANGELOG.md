@@ -3,6 +3,14 @@
 All notable changes are documented here. The project follows semantic versioning
 for public protocol and package compatibility once a public release is tagged.
 
+## Unreleased
+
+- Rejects duplicate worker identities and resource evidence for unknown workers before scoring,
+  preventing ambiguous or internally inconsistent routing decisions.
+- Rejects non-positive parallel panel sizes instead of allowing Python slicing semantics to produce
+  nonsensical selections.
+- Adds GitHub Actions quality gates for linting, the test suite, and package builds on Python 3.12.
+
 ## 0.2.0-beta.1 — 2026-08-11 (package `0.2.0b1`)
 
 - Adds a durable autonomous evaluate, plan, dispatch, verify, and continue loop with
