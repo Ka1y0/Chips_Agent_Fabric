@@ -10,13 +10,32 @@ from pathlib import Path
 def test_production_autonomous_host_real_subprocess_acceptance(tmp_path: Path) -> None:
     root = Path(__file__).parents[1]
     output = tmp_path / "autonomous-host-acceptance.json"
+    runner = tmp_path / "run-autonomous-host-acceptance.py"
+    runner.write_text(
+        """from pathlib import Path
+import sys
+
+from scripts import run_autonomous_host_acceptance as acceptance
+
+_original_fixture = acceptance._fixture
+
+
+def _fixture(root: Path, *, delay_seconds: float = 0.20):
+    # The control scenario must observe an actually in-flight Worker process before
+    # issuing hard pause. A 200ms fixture can finish during CLI startup on hosted
+    # Linux runners, turning cancellation verification into a scheduler race.
+    if root.name == "controls":
+        delay_seconds = max(delay_seconds, 1.0)
+    return _original_fixture(root, delay_seconds=delay_seconds)
+
+
+acceptance._fixture = _fixture
+raise SystemExit(acceptance._run_all(Path(sys.argv[1]).resolve()))
+""",
+        encoding="utf-8",
+    )
     result = subprocess.run(
-        [
-            sys.executable,
-            str(root / "scripts/run_autonomous_host_acceptance.py"),
-            "--output",
-            str(output),
-        ],
+        [sys.executable, str(runner), str(output)],
         cwd=root,
         env={
             "HOME": str(tmp_path / "home"),
