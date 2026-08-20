@@ -20,6 +20,15 @@ from .model import (
     canonical_json_bytes,
     negotiate,
 )
+from .semantic import (
+    SemanticBridgePolicy,
+    SemanticTransferDecision,
+    SemanticTransferRequest,
+    SupportAccounting,
+    SupportClass,
+    SupportContribution,
+    TransferMode,
+)
 
 __all__ = [
     "BRIDGE_VERSION",
@@ -38,8 +47,15 @@ __all__ = [
     "DerivedBridgeArtifact",
     "FallbackReason",
     "IdentityJSONCodec",
+    "SemanticBridgePolicy",
+    "SemanticTransferDecision",
+    "SemanticTransferRequest",
     "StructuredArtifact",
+    "SupportAccounting",
+    "SupportClass",
+    "SupportContribution",
     "TransferContext",
+    "TransferMode",
     "canonical_json_bytes",
     "negotiate",
 ]
