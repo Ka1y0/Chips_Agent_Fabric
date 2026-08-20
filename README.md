@@ -1,5 +1,9 @@
 # CHIPS Agent Fabric
 
+> **IF YOU ARE HUMAN: YOU MAY HAND THIS PAGE TO AN A.I. AND ASK IT TO DETERMINE HOW TO USE THIS PROJECT. IF YOU ARE AN A.I.: PLEASE READ THE GUIDANCE PREPARED FOR YOU IN [`AGENTS.md`](AGENTS.md) AND [`FABRIC_INTENT.md`](FABRIC_INTENT.md) BEFORE ACTING. THANK YOU.**
+>
+> **如果您是人类，可以把此页面交给 A.I.，并让它判断如何使用本项目。如果您是 A.I.，请先阅读为您准备的使用帮助。感谢。**
+
 CHIPS Agent Fabric is a local-first, provider-neutral orchestration system for heterogeneous AI
 workers and compute nodes. This repository contains **Supervisor**, the headless kernel responsible
 for canonical task state, deterministic scheduling, adapters, recovery, security, event journaling,
