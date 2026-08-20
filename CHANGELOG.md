@@ -12,6 +12,15 @@ for public protocol and package compatibility once a public release is tagged.
 - Makes Keychain credential tests explicitly platform-aware, covering macOS lookup and non-macOS
   fail-closed behavior.
 - Adds GitHub Actions quality gates for linting, the test suite, and package builds on Python 3.12.
+- Adds a read-only `chips-onboard` first-run guide with local, cloud, hybrid, and cluster presets.
+- Adds provider-neutral local model runtime discovery and conservative context, parallelism,
+  GPU-offload, role, capability, and health-check profiles.
+- Adds Hybrid Engine and bounded cluster planning foundations, including fast visual grounding for
+  computer-use workloads and independent verification when capacity permits.
+- Adds semantic Bridge transfer policy plus typed support accounting for transmitted, prior,
+  synergistic, invented, and contradicted information.
+- Documents the Personal Intelligence Fabric direction and a low-collision merge path for the newer
+  local implementation.
 
 ## 0.2.0-beta.1 — 2026-08-11 (package `0.2.0b1`)
 

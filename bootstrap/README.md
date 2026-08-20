@@ -1,6 +1,17 @@
 # Universal bootstrap FOUNDATION
 
-`chips.py` is a portable, standard-library bootstrap entrypoint:
+For the shortest first-run path after installing the package, use the read-only onboarding guide:
+
+```sh
+chips-onboard
+chips-onboard --json
+```
+
+It selects a `minimal`, `localOnly`, `cloudOnly`, `hybridWorkstation`, or `clusterNode` preset from
+credential-free discovery. It lists safe preparation steps separately from approval-gated mutations
+and performs no installation or service change.
+
+`chips.py` remains the portable, standard-library bootstrap entrypoint:
 
 ```sh
 python3 bootstrap/chips.py bootstrap --json
@@ -15,9 +26,9 @@ review artifacts. Windows uses `.\.venv\Scripts\chips.exe`; see `docs/BOOTSTRAP.
 
 The first command is strictly read-only. The second writes a review bundle only into a new or empty
 explicit directory. `--state-db` opts into a private durable SQLite plan/audit recorder. All remain
-host-operation dry-runs: they never install packages, authenticate, contact remote
-services, inspect listeners/credentials, start services, elevate privileges, create identity keys,
-configure firewalls/transports, or register Workers.
+host-operation dry-runs: they never install packages, authenticate, contact remote services, inspect
+listeners/credentials, start services, elevate privileges, create identity keys, configure
+firewalls/transports, or register Workers.
 
 Discovery covers macOS, Windows, and a Linux foundation: OS, architecture, hostname, CPU, RAM,
 GPU/VRAM where an installed read-only system utility reports it, common runtimes, model server
@@ -32,5 +43,5 @@ Generated files:
 - `supervisor-config.example.json` — restrictive loopback/read-only candidate configuration.
 - `checksums.json` — SHA-256 integrity for the other generated files.
 
-This is a **FOUNDATION**, not a completed installer or enrollment service. The planned privileged
-execution boundary is described in `docs/CAPABILITY_MODEL.md` and `docs/TRUST_MODEL.md`.
+This is an **IMPLEMENTED FOUNDATION**, not a completed installer or enrollment service. The planned
+privileged execution boundary is described in `docs/CAPABILITY_MODEL.md` and `docs/TRUST_MODEL.md`.
