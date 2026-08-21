@@ -398,8 +398,16 @@ async def test_soft_pause_finishes_work_without_cancel_then_resume_replans(
     host.request_shutdown()
     await serving
 
-    assert calls == 2
-    assert service.get_goal(goal["id"])["termination_reason"] == "SUCCESS"
+    completed = service.get_goal(goal["id"])
+    replan_events = [
+        event
+        for event in store.list_events(limit=1000)
+        if event["kind"] == "goalReplanRequired"
+    ]
+    assert completed["termination_reason"] == "SUCCESS"
+    assert completed["iteration_count"] == 2
+    assert completed["task_count"] == 2
+    assert len(replan_events) == 1
 
 
 async def test_live_stop_requests_cancellation_and_is_durable(store: StateStore) -> None:
