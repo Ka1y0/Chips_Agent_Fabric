@@ -20,7 +20,30 @@ from scripts import run_autonomous_host_acceptance as acceptance
 _original_fixture = acceptance._fixture
 _original_launched_action_run = acceptance._launched_action_run
 _original_restart = acceptance._restart
+_original_create_goal = acceptance._create_goal
+_original_wait = acceptance._wait
 _restart_gates: dict[str, tuple[Path, Path]] = {}
+_deferred_concurrent_goal = None
+
+
+def _create_goal(fixture, goal_id, intent):
+    global _deferred_concurrent_goal
+    if fixture.root.name != "concurrent":
+        return _original_create_goal(fixture, goal_id, intent)
+    if _deferred_concurrent_goal is not None:
+        raise RuntimeError("concurrent acceptance already has one deferred goal")
+    _deferred_concurrent_goal = (fixture, goal_id, intent)
+    return {"id": goal_id}
+
+
+def _wait(description, condition, *, timeout=15):
+    global _deferred_concurrent_goal
+    result = _original_wait(description, condition, timeout=timeout)
+    if description == "both production hosts" and _deferred_concurrent_goal is not None:
+        fixture, goal_id, intent = _deferred_concurrent_goal
+        _deferred_concurrent_goal = None
+        _original_create_goal(fixture, goal_id, intent)
+    return result
 
 
 def _gate_action_worker(fixture):
@@ -88,6 +111,8 @@ def _restart(root: Path):
             release.touch(exist_ok=True)
 
 
+acceptance._create_goal = _create_goal
+acceptance._wait = _wait
 acceptance._fixture = _fixture
 acceptance._launched_action_run = _launched_action_run
 acceptance._restart = _restart
