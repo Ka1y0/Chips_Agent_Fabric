@@ -30,14 +30,14 @@ def _gate_action_worker(fixture):
 
     source = fixture.executable.read_text(encoding="utf-8")
     source = source.replace(
-        "import time\n",
-        "import time\nfrom pathlib import Path\n",
+        "import time\\n",
+        "import time\\nfrom pathlib import Path\\n",
         1,
     )
-    delay_line = "time.sleep(0.05)\n"
+    delay_line = "time.sleep(0.05)\\n"
     gate = r'''gate_started = os.environ.get("FABRIC_ACCEPTANCE_WORKER_STARTED")
 gate_release = os.environ.get("FABRIC_ACCEPTANCE_WORKER_RELEASE")
-if gate_started and gate_release and "Canonical bounded input:\n" not in prompt:
+if gate_started and gate_release and "Canonical bounded input:\\n" not in prompt:
     Path(gate_started).write_text(str(os.getpid()), encoding="utf-8")
     gate_deadline = time.monotonic() + 60
     while not Path(gate_release).exists():
