@@ -19,14 +19,13 @@ from scripts import run_autonomous_host_acceptance as acceptance
 
 _original_fixture = acceptance._fixture
 _original_launched_action_run = acceptance._launched_action_run
+_original_restart = acceptance._restart
 _restart_gates: dict[str, tuple[Path, Path]] = {}
 
 
 def _gate_action_worker(fixture):
     started = fixture.root / "gated-action-worker-started"
     release = fixture.root / "gated-action-worker-release"
-    fixture.environment["FABRIC_ACCEPTANCE_WORKER_STARTED"] = str(started)
-    fixture.environment["FABRIC_ACCEPTANCE_WORKER_RELEASE"] = str(release)
 
     source = fixture.executable.read_text(encoding="utf-8")
     source = source.replace(
@@ -35,12 +34,12 @@ def _gate_action_worker(fixture):
         1,
     )
     delay_line = "time.sleep(0.05)\\n"
-    gate = r'''gate_started = os.environ.get("FABRIC_ACCEPTANCE_WORKER_STARTED")
-gate_release = os.environ.get("FABRIC_ACCEPTANCE_WORKER_RELEASE")
-if gate_started and gate_release and "Canonical bounded input:\\n" not in prompt:
-    Path(gate_started).write_text(str(os.getpid()), encoding="utf-8")
+    gate = f'''gate_started = Path({str(started)!r})
+gate_release = Path({str(release)!r})
+if "Canonical bounded input:" not in prompt:
+    gate_started.write_text(str(os.getpid()), encoding="utf-8")
     gate_deadline = time.monotonic() + 60
-    while not Path(gate_release).exists():
+    while not gate_release.exists():
         if time.monotonic() >= gate_deadline:
             raise SystemExit(124)
         time.sleep(0.01)
@@ -75,23 +74,29 @@ def _launched_action_run(fixture, goal_id):
     if gate is None:
         return run
     started, _release = gate
-    if not started.is_file():
-        return None
+    return run if started.is_file() else None
+
+
+def _restart(root: Path):
     try:
-        started_pid = int(started.read_text(encoding="utf-8").strip())
-        run_pid = int(run["process_id"])
-    except (OSError, TypeError, ValueError):
-        return None
-    return run if run_pid == started_pid else None
+        return _original_restart(root)
+    finally:
+        gate = _restart_gates.get(str(root))
+        if gate is not None:
+            _started, release = gate
+            release.parent.mkdir(parents=True, exist_ok=True)
+            release.touch(exist_ok=True)
 
 
 acceptance._fixture = _fixture
 acceptance._launched_action_run = _launched_action_run
+acceptance._restart = _restart
 try:
     exit_code = acceptance._run_all(Path(sys.argv[1]).resolve())
 finally:
     for _started, release in _restart_gates.values():
-        release.touch(exist_ok=True)
+        if release.parent.exists():
+            release.touch(exist_ok=True)
 raise SystemExit(exit_code)
 """,
         encoding="utf-8",
