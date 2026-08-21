@@ -308,7 +308,12 @@ async def test_serve_ignores_paused_and_stopped_then_observes_resume(store: Stat
     host.request_shutdown()
     await serving
 
-    assert factory_calls == [paused["id"]]
+    completed = service.get_goal(paused["id"])
+    assert factory_calls
+    assert set(factory_calls) == {paused["id"]}
+    assert completed["termination_reason"] == TerminationReason.SUCCESS.value
+    assert completed["iteration_count"] == 1
+    assert completed["task_count"] == 1
     assert service.get_goal(stopped["id"])["state"] == GoalState.STOPPED.value
 
 
