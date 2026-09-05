@@ -282,9 +282,11 @@ def _smoke_metrics(value: dict[str, Any], options: ProbeOptions) -> tuple[int | 
             raise ProbeError("incompleteInference")
         count = value.get("eval_count")
         duration = value.get("eval_duration")
-        if type(duration) is int and 0 < duration <= 10**15:
-            if type(count) is int and 0 <= count <= 10**9:
-                speed = count / duration * 1_000_000_000
+        if (
+            type(duration) is int and 0 < duration <= 10**15
+            and type(count) is int and 0 <= count <= 10**9
+        ):
+            speed = count / duration * 1_000_000_000
     else:
         choices = value.get("choices")
         if not isinstance(choices, list) or len(choices) != 1:
