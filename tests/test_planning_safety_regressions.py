@@ -154,7 +154,9 @@ def test_reasoning_profile_preserves_unknown_false_and_true(
 
 @pytest.mark.parametrize("name", ["supports_vision", "supports_tools", "supports_reasoning"])
 @pytest.mark.parametrize("value", ["false", 0, 1])
-def test_model_capability_flags_do_not_accept_truthy_untyped_values(name: str, value: object) -> None:
+def test_model_capability_flags_do_not_accept_truthy_untyped_values(
+    name: str, value: object,
+) -> None:
     with pytest.raises(ValueError, match=name):
         LocalModelObservation(LocalModelRuntime.OLLAMA, "fixture-model", **{name: value})
 
