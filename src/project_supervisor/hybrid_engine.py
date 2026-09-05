@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 
 from .cluster import (
@@ -61,6 +61,11 @@ class HybridRequest:
     def __post_init__(self) -> None:
         if not self.request_id.strip():
             raise ValueError("request_id must not be empty")
+        if any(
+            not isinstance(value, str) or not value.strip()
+            for value in self.required_capabilities
+        ):
+            raise ValueError("required_capabilities must contain canonical non-empty IDs")
         if not 1 <= self.requested_parallelism <= 32:
             raise ValueError("requested_parallelism must be between one and 32")
         if self.visual_interaction_steps < 0:
@@ -114,6 +119,32 @@ class HybridEngine:
                 visual_replicas=visual_replicas,
                 spawn_policy=policy,
             )
+            # Keep standard capabilities on their specialist stages. Any extra
+            # request-specific requirement must constrain the Actor, not vanish
+            # when the fixed computer-use template replaces the request topology.
+            covered = frozenset(
+                capability
+                for stage in blueprint.stages
+                for capability in stage.required_capabilities
+            )
+            additional = required - covered
+            if additional:
+                blueprint = replace(
+                    blueprint,
+                    stages=tuple(
+                        replace(
+                            stage,
+                            required_capabilities=stage.required_capabilities | additional,
+                        )
+                        if stage.role is AgentRole.COMPUTER_ACTOR
+                        else stage
+                        for stage in blueprint.stages
+                    ),
+                )
+                facts.append(
+                    "computer-use Actor retains additional required capabilities: "
+                    + ", ".join(sorted(additional))
+                )
             mode = HybridExecutionMode.DAG_CLUSTER
             facts.append(
                 "computer use is split into fast visual grounding, planning, action, and review"
@@ -168,7 +199,16 @@ class HybridEngine:
             )
             facts.append("one bounded stage is sufficient for the requested workload")
 
-        local_first = request.privacy_sensitive and required <= local_capabilities
+        # Privacy applies to the entire generated DAG, including planning,
+        # synthesis and review, not merely the request's primary capability.
+        # This is a capability preflight, not proof of fresh Worker availability.
+        stage_requirements = required | frozenset(
+            capability
+            for stage in blueprint.stages
+            for capability in stage.required_capabilities
+        )
+        missing_local = stage_requirements - local_capabilities
+        local_first = request.privacy_sensitive and not missing_local
         dispatch_blocked = request.privacy_sensitive and not local_first
         remote_fallback_allowed = not request.privacy_sensitive
         if request.privacy_sensitive:
@@ -177,6 +217,10 @@ class HybridEngine:
                 if local_first
                 else "local capabilities are insufficient; no silent privacy downgrade is allowed"
             )
+            if missing_local:
+                facts.append(
+                    "missing local stage capabilities: " + ", ".join(sorted(missing_local))
+                )
 
         multi_stage = len(blueprint.stages) > 1 or any(
             stage.replicas > 1 for stage in blueprint.stages

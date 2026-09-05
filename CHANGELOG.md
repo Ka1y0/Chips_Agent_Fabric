@@ -14,6 +14,13 @@ for public protocol and package compatibility once a public release is tagged.
   state or permission authority.
 - Adds duplicate-Worker scheduler rejection, platform-explicit credential tests, and isolated CI
   quality/build/subprocess acceptance gates.
+- Checks all generated stage capabilities before allowing a privacy-sensitive Hybrid plan and
+  preserves explicit Computer Use requirements on the Actor.
+- Preserves finite latency/quality/cost routing weights in cluster instances and protocol output.
+- Keeps unknown reasoning support distinct from unsupported, validates local capability flags,
+  and avoids concurrency/full-offload recommendations without observed memory headroom.
+- Rejects credential-bearing or malformed local endpoint values at both discovery and direct
+  candidate construction. See `docs/AUDIT_2026_09_05.md` for scope and integration limitations.
 
 ## 0.2.0-beta.1 — 2026-08-11 (package `0.2.0b1`)
 

@@ -48,6 +48,10 @@ class LocalRuntimeCandidate:
     evidence: str
     probe_required: bool = True
 
+    def __post_init__(self) -> None:
+        # Apply the same boundary to direct callers and bootstrap discovery.
+        object.__setattr__(self, "endpoint", _loopback_endpoint(self.endpoint))
+
     def to_protocol(self) -> dict[str, object]:
         return {
             "runtime": self.runtime.value,
@@ -79,6 +83,10 @@ class LocalModelObservation:
     def __post_init__(self) -> None:
         if not self.model_id.strip():
             raise ValueError("model_id must not be empty")
+        for name in ("supports_vision", "supports_tools", "supports_reasoning"):
+            value = getattr(self, name)
+            if value is not None and not isinstance(value, bool):
+                raise ValueError(f"{name} must be a boolean or None")
         for name in (
             "context_window_tokens",
             "loaded_memory_bytes",
@@ -160,17 +168,40 @@ def _mapping(value: object) -> Mapping[str, Any]:
 
 
 def _loopback_endpoint(value: str) -> str:
-    parsed = urlsplit(value)
-    if parsed.scheme not in {"http", "https"} or parsed.hostname not in {
+    # urlsplit normalizes some controls before parsing. Reject those in the raw
+    # input so the validated endpoint and a later client's interpretation agree.
+    if (
+        not isinstance(value, str)
+        or not value
+        or any(character.isspace() or ord(character) < 32 or ord(character) == 127
+               for character in value)
+        or "\\" in value
+    ):
+        raise ValueError("local model endpoints must not contain whitespace or control characters")
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+        hostname = parsed.hostname
+    except ValueError:
+        # Never echo endpoint strings: rejected input may contain a credential.
+        raise ValueError("local model endpoint has an invalid host or port") from None
+    if parsed.scheme not in {"http", "https"} or hostname not in {
         "127.0.0.1",
         "localhost",
         "::1",
     }:
         raise ValueError("configured local model endpoints must use explicit loopback HTTP(S)")
-    if parsed.username or parsed.password or parsed.fragment:
+    if (
+        parsed.username is not None
+        or parsed.password is not None
+        or "?" in value
+        or "#" in value
+    ):
         raise ValueError(
-            "configured local model endpoints must not contain credentials or fragments"
+            "local model endpoints must not contain user info, query parameters or fragments"
         )
+    if port == 0 or parsed.netloc.endswith(":"):
+        raise ValueError("local model endpoint port must be between 1 and 65535 when specified")
     return value.rstrip("/")
 
 
@@ -284,6 +315,8 @@ def adapt_local_model(
     explanation: list[str] = []
     if advertised_context is None:
         explanation.append("context window is unknown; no context headroom is inferred")
+    if pressure is MemoryPressure.UNKNOWN:
+        explanation.append("memory headroom is unknown; do not increase parallelism or GPU offload")
 
     pressure_caps = {
         MemoryPressure.CRITICAL: 4_096,
@@ -306,7 +339,7 @@ def adapt_local_model(
     max_parallel = observation.max_parallel
     parallelism = 1
     speed = observation.measured_tokens_per_second
-    if pressure in {MemoryPressure.LOW, MemoryPressure.UNKNOWN} and speed is not None:
+    if pressure is MemoryPressure.LOW and speed is not None:
         if speed >= 45 and max_parallel is not None and max_parallel >= 4:
             parallelism = 4
         elif speed >= 20 and max_parallel is not None and max_parallel >= 2:
@@ -322,7 +355,7 @@ def adapt_local_model(
 
     if observation.gpu_offload_layers is not None:
         gpu_policy = "preserveObserved"
-    elif host_vram_bytes is None:
+    elif host_vram_bytes is None or pressure is MemoryPressure.UNKNOWN:
         gpu_policy = "unknown"
     elif pressure in {MemoryPressure.HIGH, MemoryPressure.CRITICAL}:
         gpu_policy = "conservative"
@@ -347,7 +380,13 @@ def adapt_local_model(
         roles.add(LocalModelRole.TOOL_ROUTER)
         capabilities.add("fast-routing")
 
-    reasoning_mode = "onDemand" if observation.supports_reasoning else "unsupported"
+    reasoning_mode = (
+        "unknown"
+        if observation.supports_reasoning is None
+        else "onDemand"
+        if observation.supports_reasoning
+        else "unsupported"
+    )
     health_checks = ["models.list", "chat.smoke", "latency.sample"]
     if observation.supports_tools:
         health_checks.append("tool-call.smoke")

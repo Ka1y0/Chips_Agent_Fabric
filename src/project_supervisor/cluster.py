@@ -7,6 +7,7 @@ stage instance from one frozen capability/resource snapshot.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -47,8 +48,20 @@ class ClusterStage:
         if not 1 <= self.replicas <= 32:
             raise ValueError("replicas must be between one and 32")
         weights = (self.latency_weight, self.quality_weight, self.cost_weight)
-        if any(value < 0 for value in weights) or sum(weights) <= 0:
-            raise ValueError("cluster stage weights must be non-negative with a positive sum")
+        if (
+            any(
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+                or value < 0
+                for value in weights
+            )
+            or not math.isfinite(sum(weights))
+            or sum(weights) <= 0
+        ):
+            raise ValueError(
+                "cluster stage weights must be finite, non-negative with a positive sum"
+            )
         if self.stage_id in self.depends_on:
             raise ValueError("a stage cannot depend on itself")
 
@@ -134,6 +147,11 @@ class ClusterBlueprint:
                         role.value for role in stage.independent_from_roles
                     ),
                     "resourceKinds": sorted(stage.resource_kinds),
+                    "routingWeights": {
+                        "latency": stage.latency_weight,
+                        "quality": stage.quality_weight,
+                        "cost": stage.cost_weight,
+                    },
                 }
                 for stage in self.stages
             ],
@@ -151,6 +169,9 @@ class ClusterStageInstance:
     preferred_capabilities: frozenset[str]
     independent_from_roles: frozenset[AgentRole]
     resource_kinds: frozenset[str]
+    latency_weight: float = 0.5
+    quality_weight: float = 0.5
+    cost_weight: float = 0.0
 
     def to_protocol(self) -> dict[str, object]:
         return {
@@ -163,6 +184,11 @@ class ClusterStageInstance:
             "preferredCapabilities": sorted(self.preferred_capabilities),
             "independentFromRoles": sorted(role.value for role in self.independent_from_roles),
             "resourceKinds": sorted(self.resource_kinds),
+            "routingWeights": {
+                "latency": self.latency_weight,
+                "quality": self.quality_weight,
+                "cost": self.cost_weight,
+            },
             "workerID": None,
         }
 
@@ -197,6 +223,9 @@ class ClusterPlanner:
                 preferred_capabilities=stage.preferred_capabilities,
                 independent_from_roles=stage.independent_from_roles,
                 resource_kinds=stage.resource_kinds,
+                latency_weight=stage.latency_weight,
+                quality_weight=stage.quality_weight,
+                cost_weight=stage.cost_weight,
             )
             for stage in blueprint.stages
             for replica in range(1, stage.replicas + 1)
