@@ -25,6 +25,18 @@ configured loopback OpenAI-compatible observations into conservative recommendat
 capacity, recommendation, health, and freshness remain distinct; unknown context or parallel
 capacity stays unknown and unsafe runtime settings are never applied silently.
 
+## Explicit live model checks and Bridge encoding
+
+`chips-model-probe --runtime ollama --endpoint http://127.0.0.1:11434` is socket-free by default.
+Only add `--allow-network` after the operator permits a catalog request. Fixed synthetic inference
+also requires `--model EXACT_MODEL_ID --allow-inference`; this may load a model and consume compute.
+No credential access, settings mutation, or Worker registration occurs. A loopback server is not
+proof that inference stays local. Read `docs/EXECUTION_VERTICAL_SLICES.md` before using the command.
+
+`project_supervisor.bridge.zlib_codec` provides an opt-in bounded lossless wire codec for peers
+that negotiate it. Keep the existing Bridge authority policy and source fallback. Do not describe
+byte compression as reduced model tokens or a completed learned semantic communication system.
+
 ## Safe lifecycle
 
 A task carries explicit requirements, privacy, permission class, topology, and acceptance criteria.

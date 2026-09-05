@@ -21,6 +21,13 @@ for public protocol and package compatibility once a public release is tagged.
   and avoids concurrency/full-offload recommendations without observed memory headroom.
 - Rejects credential-bearing or malformed local endpoint values at both discovery and direct
   candidate construction. See `docs/AUDIT_2026_09_05.md` for scope and integration limitations.
+- Adds `chips-model-probe`: explicit loopback catalog requests and separately approved synthetic
+  inference, with bounded HTTP responses, cancellation, safe error codes and freshness-aware
+  projection into the existing local-model profiler. Discovery and settings remain non-mutating.
+- Adds an optional bounded `zlib-json/1.0` Bridge wire codec with exact cross-process round trips,
+  corruption detection and unchanged authority fallback. No model-token savings are claimed.
+- Adds an independent executable-foundations test/build/clean-wheel gate while retaining every
+  existing quality and acceptance gate. See `docs/EXECUTION_VERTICAL_SLICES.md` for usage and limits.
 
 ## 0.2.0-beta.1 — 2026-08-11 (package `0.2.0b1`)
 

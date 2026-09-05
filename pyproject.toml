@@ -28,6 +28,7 @@ dev = [
 [project.scripts]
 chips = "bootstrap.chips:main"
 chips-onboard = "bootstrap.onboarding:main"
+chips-model-probe = "project_supervisor.local_probe:main"
 project-supervisor = "project_supervisor.cli:main"
 
 [tool.hatch.build]
