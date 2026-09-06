@@ -52,12 +52,19 @@ jobs:
           pytest -v --tb=short -p no:cacheprovider \
             tests/test_autonomous_host_startup.py tests/test_acceptance_readiness.py
 
+      - name: Run Goal inspection and controlled pause-stop regressions
+        run: |
+          pytest -v --tb=short -p no:cacheprovider -p scripts.goal_diagnostics_pytest \
+            tests/test_goal_inspection.py tests/test_goal_diagnostics_pytest.py \
+            tests/test_goal_inspection_integration.py
+
       - name: Run unit and integration suite
         # Keep every existing test and assertion. Verbose names and a stack dump
         # distinguish a stalled test from a slow suite without extending its deadline.
         run: |
           pytest \
             -v --tb=short -p no:cacheprovider -o faulthandler_timeout=60 \
+            -p scripts.goal_diagnostics_pytest \
             --ignore=tests/test_autonomous_host_subprocess.py \
             --ignore=tests/test_autonomous_subprocess_acceptance.py \
             --ignore=tests/test_local_worker_v2_native_cli_subprocess.py \
@@ -104,19 +111,25 @@ jobs:
           python -m venv "$RUNNER_TEMP/fabric-wheel"
           "$RUNNER_TEMP/fabric-wheel/bin/python" -m pip install dist/*.whl
           cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/fabric-wheel/bin/chips-goal-inspect" --help
           "$RUNNER_TEMP/fabric-wheel/bin/chips-model-probe" --help
           "$RUNNER_TEMP/fabric-wheel/bin/chips-model-probe" \
             --runtime ollama --endpoint http://127.0.0.1:11434 > probe.json
           "$RUNNER_TEMP/fabric-wheel/bin/python" -I -c '
           import json, sys
           from pathlib import Path
-          from project_supervisor import local_probe
+          from project_supervisor import goal_inspection, local_probe
           from project_supervisor.bridge.zlib_codec import ZlibJSONCodec
           report = json.loads(Path("probe.json").read_text())
           assert report["status"] == "dryRun"
           assert report["runtimeSettingsChanged"] is False
           assert report["inferenceRequested"] is False
           assert Path(local_probe.__file__).is_relative_to(Path(sys.prefix))
+          assert Path(goal_inspection.__file__).is_relative_to(Path(sys.prefix))
+          missing = Path("uninitialized-goal-inspection.sqlite3")
+          assert not missing.exists()
+          assert goal_inspection.inspect_goal(missing, "goal")["status"] == "unavailable"
+          assert not missing.exists()
           assert ZlibJSONCodec.codec_id == "zlib-json/1.0"
           '
 

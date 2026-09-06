@@ -37,6 +37,15 @@ proof that inference stays local. Read `docs/EXECUTION_VERTICAL_SLICES.md` befor
 that negotiate it. Keep the existing Bridge authority policy and source fallback. Do not describe
 byte compression as reduced model tokens or a completed learned semantic communication system.
 
+## Inspect before recovery
+
+`chips-goal-inspect --database EXPLICIT_DATABASE --goal EXACT_GOAL_ID` returns a bounded,
+read-only `goal-inspection/v1` snapshot without initializing or migrating state. Goal controls,
+lease ownership and external execution quiescence are separate: the last remains unknown because
+this command does not contact providers. A readable snapshot is not a successful task, permission
+to retry, or proof that a worker stopped. Read `docs/GOAL_INSPECTION.md` for schema, limits and
+pseudonymous disclosure boundaries. Do not share reports automatically.
+
 ## Safe lifecycle
 
 A task carries explicit requirements, privacy, permission class, topology, and acceptance criteria.
