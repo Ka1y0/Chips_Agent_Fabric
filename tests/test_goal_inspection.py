@@ -117,6 +117,7 @@ def test_host_errors_and_untrusted_enum_values_are_not_echoed(database: Path) ->
     update(database, "UPDATE events SET kind='private event'")
     report = inspection.inspect_goal(database, "goal", now=NOW)
     assert report["host"]["hasError"] is True
+    assert "HOST_HAS_RECORCORDED_ERROR" not in report["findings"]
     assert "HOST_HAS_RECORDED_ERROR" in report["findings"]
     assert report["goal"]["terminationReason"] == "unknown"
     assert report["actionCounts"] == {"unknown": 1}
@@ -234,9 +235,11 @@ def test_connection_closes_on_success_and_failure(database: Path, monkeypatch) -
 
 
 def test_read_transaction_cannot_write_or_initialize(database: Path) -> None:
-    with inspection._open_snapshot(database) as connection:
-        with pytest.raises(sqlite3.OperationalError):
-            connection.execute("UPDATE autonomous_goals SET state='stopped'")
+    with (
+        inspection._open_snapshot(database) as connection,
+        pytest.raises(sqlite3.OperationalError),
+    ):
+        connection.execute("UPDATE autonomous_goals SET state='stopped'")
     assert inspection.inspect_goal(database, "goal", now=NOW)["goal"]["state"] == "running"
 
 
