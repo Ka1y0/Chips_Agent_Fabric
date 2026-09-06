@@ -258,10 +258,11 @@ class AutonomousHostRepository:
         *,
         lease_ttl_seconds: float,
     ) -> GoalLeaseClaim | None:
-        now_value = datetime.now(UTC)
-        now = _time(now_value)
-        expires_at = _expires(now_value, lease_ttl_seconds)
         with self.store.transaction() as connection:
+            # Waiting for SQLite's write lock must not consume a newly issued lease.
+            now_value = datetime.now(UTC)
+            now = _time(now_value)
+            expires_at = _expires(now_value, lease_ttl_seconds)
             goal = connection.execute(
                 "SELECT project_id,state FROM autonomous_goals WHERE id=?", (goal_id,)
             ).fetchone()
@@ -362,15 +363,19 @@ class AutonomousHostRepository:
         *,
         lease_ttl_seconds: float,
     ) -> bool:
-        now_value = datetime.now(UTC)
         iteration_id, action_id, in_flight = self._goal_position(claim.goal_id)
         with self.store.transaction() as connection:
+            # Recheck expiry after any observation or write-lock wait. A heartbeat
+            # must never resurrect an expired generation, even before takeover.
+            now_value = datetime.now(UTC)
+            now = _time(now_value)
             cursor = connection.execute(
                 "UPDATE autonomous_goal_leases SET heartbeat_at=?,expires_at=?,"
                 "current_iteration_id=?,current_action_id=?,in_flight_state=? "
-                "WHERE goal_id=? AND host_id=? AND generation=? AND state='owned'",
+                "WHERE goal_id=? AND host_id=? AND generation=? AND state='owned' "
+                "AND expires_at>?",
                 (
-                    _time(now_value),
+                    now,
                     _expires(now_value, lease_ttl_seconds),
                     iteration_id,
                     action_id,
@@ -378,6 +383,7 @@ class AutonomousHostRepository:
                     claim.goal_id,
                     claim.host_id,
                     claim.generation,
+                    now,
                 ),
             )
         return cursor.rowcount == 1
@@ -678,6 +684,8 @@ class AutonomousHost:
             return result
         except BaseException as caught:
             error = caught
+            # The engine's ownership guard can detect loss before the heartbeat.
+            lost = lost or isinstance(caught, GoalLeaseLost)
             if engine_task is not None and not engine_task.done():
                 engine_task.cancel()
                 await asyncio.gather(engine_task, return_exceptions=True)
