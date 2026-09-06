@@ -59,6 +59,17 @@ _V2_TOP_FIELDS = frozenset(
         "job",
     }
 )
+_V2_TOP_FIELDS_WITH_AUTHORIZATION = _V2_TOP_FIELDS | {"authorization"}
+_AUTHORIZATION_FIELDS = frozenset(
+    {
+        "authorization_id",
+        "schema_version",
+        "version",
+        "definition_sha256",
+        "platform_approval_state",
+        "data_packet_ids",
+    }
+)
 _EXECUTION_FIELDS = frozenset({"run_id", "task_id"})
 _JOB_FIELDS = frozenset({"driver_id", "job_type", "role", "prompt"})
 _STRUCTURED_JOB_FIELDS = _JOB_FIELDS | {"schema"}
@@ -901,6 +912,7 @@ def create_app(
             )
         execution = body.get("execution")
         job = body.get("job")
+        authorization = body.get("authorization")
         if not isinstance(execution, Mapping) or not isinstance(job, Mapping):
             return _error(400, "INVALID_LAUNCH_REQUEST", "execution and job must be objects")
         run_id = execution.get("run_id")
@@ -911,7 +923,12 @@ def create_app(
             not isinstance(task_id, str) or not task_id.strip() or len(task_id) > 256
         ):
             return _error(400, "INVALID_LAUNCH_REQUEST", "execution.task_id must be bounded")
-        computed = request_digest(run_id=run_id, task_id=task_id, job=job)
+        computed = request_digest(
+            run_id=run_id,
+            task_id=task_id,
+            job=job,
+            authorization=(authorization if isinstance(authorization, Mapping) else None),
+        )
         raw_driver_id = job.get("driver_id")
         profile: DriverProfile | None = None
         try:
@@ -924,8 +941,32 @@ def create_app(
         expected_job_fields = (
             _STRUCTURED_JOB_FIELDS if job.get("job_type") == "inference.structured" else _JOB_FIELDS
         )
-        if set(body) != _V2_TOP_FIELDS:
+        if set(body) not in {_V2_TOP_FIELDS, _V2_TOP_FIELDS_WITH_AUTHORIZATION}:
             reason = "UNSUPPORTED_REQUEST_FIELDS"
+        elif authorization is not None and (
+            not isinstance(authorization, Mapping)
+            or set(authorization) != _AUTHORIZATION_FIELDS
+            or authorization.get("schema_version") != "authorization-envelope/v1"
+            or isinstance(authorization.get("version"), bool)
+            or not isinstance(authorization.get("version"), int)
+            or authorization["version"] < 1
+            or not isinstance(authorization.get("authorization_id"), str)
+            or not 0 < len(authorization["authorization_id"]) <= 160
+            or not isinstance(authorization.get("definition_sha256"), str)
+            or len(authorization["definition_sha256"]) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in authorization["definition_sha256"]
+            )
+            or authorization.get("platform_approval_state") not in {"notRequired", "approved"}
+            or not isinstance(authorization.get("data_packet_ids"), list)
+            or len(authorization["data_packet_ids"]) > 256
+            or any(
+                not isinstance(packet_id, str) or not 0 < len(packet_id) <= 160
+                for packet_id in authorization["data_packet_ids"]
+            )
+        ):
+            reason = "AUTHORIZATION_ENVELOPE_INVALID"
         elif set(execution) != _EXECUTION_FIELDS:
             reason = "UNSUPPORTED_EXECUTION_FIELDS"
         elif set(job) != expected_job_fields:
@@ -956,7 +997,12 @@ def create_app(
                 profile=profile,
             )
         assert profile is not None
-        document = canonical_request_document(run_id=run_id, task_id=task_id, job=job)
+        document = canonical_request_document(
+            run_id=run_id,
+            task_id=task_id,
+            job=job,
+            authorization=(authorization if isinstance(authorization, Mapping) else None),
+        )
         return key, computed, LaunchRequestSpec(run_id, task_id, document["job"], profile)
 
     @app.post("/v2/launches")

@@ -4,7 +4,12 @@ Labels: **IMPLEMENTED** is code/contract tested; **HOST-VERIFIED** adds sanitize
 **FOUNDATION** is a documented or partial seam not yet an end-to-end feature; **PLANNED** has no
 stable implementation; **UNSUPPORTED** is deliberately excluded.
 
-| Capability | V0.2 beta state | Machine interface |
+Phase 2 preserves `Capability != Provider` and adds
+`Capability existence != runtime executability`. A manifest describes what a Worker can provide;
+only a fresh execution-plane observation proves whether it can execute that capability now. See
+[`docs/MULTI_NODE_EXECUTION_PLANE.md`](docs/MULTI_NODE_EXECUTION_PLANE.md).
+
+| Capability | Current state | Machine interface |
 |---|---|---|
 | SQLite canonical state, migrations, append-only events | IMPLEMENTED | Python/store, CLI |
 | Task state machine and deterministic scheduling | IMPLEMENTED | Python/domain/scheduler |
@@ -19,16 +24,23 @@ stable implementation; **UNSUPPORTED** is deliberately excluded.
 | Mac→PC Tailscale transport | HOST-VERIFIED V0 topology | deployment config; not core dependency |
 | Cyber Office real REST/WebSocket observation | HOST-VERIFIED V0 topology | generic projections |
 | Portable discovery + deterministic dry-run plan | IMPLEMENTED FOUNDATION | `bootstrap/chips.py` |
+| Read-only onboarding presets over the canonical bootstrap plan | IMPLEMENTED FOUNDATION | `chips-onboard` |
 | Generated bootstrap review bundle | IMPLEMENTED FOUNDATION | `--emit --output-dir PATH` |
 | Restart-safe bootstrap lifecycle/audit recorder | IMPLEMENTED FOUNDATION | `--state-db`, `bootstrap-status`, result v1 contract |
 | macOS/Windows/Linux bootstrap discovery | IMPLEMENTED FOUNDATION | local read-only utilities |
 | Generic Worker/Node/transport semantics | IMPLEMENTED FOUNDATION | Python contracts + JSON schemas |
+| Provider-independent capability catalog, immutable Worker manifests, dynamic observations, and capability-aware routing | IMPLEMENTED V0.3 development slice | Python/domain/scheduler + SQLite + `/v1/fabric/capabilities`, `/v1/fabric/routing` |
+| Evidence-backed local-model profiles for LM Studio, Ollama, llama.cpp, and loopback OpenAI-compatible endpoints | IMPLEMENTED FOUNDATION; no automatic mutation | `project_supervisor.local_models` |
+| Hybrid workload topology planning separated from Worker routing | IMPLEMENTED FOUNDATION | `project_supervisor.hybrid_engine` + scheduler |
+| Bounded role-aware cluster DAG expansion under canonical spawn limits | IMPLEMENTED FOUNDATION | `project_supervisor.cluster` + `fabric.execution` |
+| Closed-loop semantic interaction, resource leases, trajectories, skill hints, and UI graph | IMPLEMENTED deterministic offline vertical slice | `InteractionWorkerAdapter` + SQLite + read-only semantic projections |
+| Real OS/browser/accessibility/local-parser/VLM interaction backend | PLANNED; not demonstrated | contract seams only |
 | Fenced node-runtime recovery monitor | IMPLEMENTED control plane; deployment FOUNDATION | SQLite lease/checkpoint + typed adapter schema |
 | Capability-scoped Privilege Broker | FOUNDATION design only | none yet |
 | Automated identity enrollment/recovery | FOUNDATION design only | none yet |
 | Automated install/private transport/registration | FOUNDATION; external executor absent | plan/result contracts keep approval required |
 | Zero-touch deployment | MATERIAL FOUNDATION; not demonstrated | durable lifecycle only |
-| Project_Bridge integration | separately audited foundation | integration report/document |
+| Project_Bridge integration and semantic support accounting | IMPLEMENTED FOUNDATION; optional and non-authoritative | `project_supervisor.bridge` + schemas |
 | Public/ordinary-LAN Worker/model/admin exposure | UNSUPPORTED | rejected by policy |
 | Arbitrary remote shell or hidden persistence | UNSUPPORTED | none |
 
@@ -66,3 +78,15 @@ all test seams are rejected by `--production`.
 
 Codex availability means only that a reviewed executable profile is intact; authentication,
 subscription plan, quota, and provider-native resume remain unknown until the CLI reports them.
+
+## Fabric naming boundaries
+
+A capability is a provider-independent description of work, not a provider name and not an
+authorization grant. A Worker binds an adapter/runtime to declared capabilities; permission,
+privacy, approval, health, quota, and locality remain separate routing inputs. See
+[`docs/CAPABILITY_FABRIC.md`](docs/CAPABILITY_FABRIC.md).
+
+An Interaction channel is not a Worker. It identifies the observation/action medium used by a
+scheduled semantic interaction execution. The current end-to-end acceptance uses a deterministic
+local fixture and does not demonstrate control of a real OS, browser, screen parser, LLM, or VLM.
+See [`docs/INTERACTION_FABRIC.md`](docs/INTERACTION_FABRIC.md).

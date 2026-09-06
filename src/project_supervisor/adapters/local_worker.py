@@ -715,6 +715,8 @@ class LocalWorkerAdapter(WorkerAdapter):
             "execution": {"run_id": request.run_id, "task_id": request.task_id},
             "job": job,
         }
+        if request.authorization is not None:
+            document["authorization"] = request.authorization.to_protocol()
         canonical = json.dumps(
             document,
             ensure_ascii=False,
@@ -760,6 +762,8 @@ class LocalWorkerAdapter(WorkerAdapter):
             "execution": {"run_id": request.run_id, "task_id": request.task_id},
             "job": dict(payload),
         }
+        if request.authorization is not None:
+            body["authorization"] = request.authorization.to_protocol()
         # One bounded replay is permitted only after the durable registry again proves NOT_SEEN.
         for attempt in range(2):
             try:

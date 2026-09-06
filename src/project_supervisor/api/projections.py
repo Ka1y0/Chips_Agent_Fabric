@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import PurePosixPath, PureWindowsPath
@@ -70,6 +71,74 @@ EVENT_KINDS = {
     "taskVerificationScopeBound",
     "humanEscalationRequested",
     "humanEscalationResolved",
+    "workerCapabilityManifestRecorded",
+    "workerCapabilityObservationRecorded",
+    "capabilityRegistered",
+    "capabilityUpdated",
+    "capabilityDynamicStateUpdated",
+    "childWorkProposed",
+    "childWorkProposalDecided",
+    "subagentRootBound",
+    "subagentProposed",
+    "subagentAccepted",
+    "subagentRejected",
+    "resultFusionRecorded",
+    "fusionVerificationHandoffCreated",
+    "fusionStarted",
+    "fusionConflictDetected",
+    "fusionCompleted",
+    "uiResourceRegistered",
+    "uiResourceAcquired",
+    "uiResourceReleased",
+    "uiExecutionStarted",
+    "uiObserved",
+    "uiActionVerified",
+    "uiActionFailed",
+    "uiActionCheckpointed",
+    "uiActionOutcomeUnknown",
+    "trajectoryCompleted",
+    "skillCandidateCreated",
+    "skillValidated",
+    "skillActivated",
+    "skillInvalidated",
+    "uiGraphTransitionRecorded",
+    "uiResourceRecoveryConfirmed",
+    "nodeTransportBound",
+    "workerExecutabilityObserved",
+    "executionCapacityWaitStarted",
+    "executionCapacityRecovered",
+    "executionCapacityRecoveryDeferred",
+    "nodeExecutionRecoveryLeaseAcquired",
+    "nodeRecoveryStarted",
+    "nodeRecoveryAccepted",
+    "nodeRecoveryRejected",
+    "nodeRecoveryFailed",
+    "nodeRecoveryOutcomeUnknown",
+    "nodeRecovered",
+    "nodeEnrollmentIssued",
+    "nodeEnrollmentRevoked",
+    "nodeEnrollmentAdmitted",
+    "authorizationCreated",
+    "authorizationInherited",
+    "authorizationBound",
+    "dataPacketRegistered",
+    "dataMovementObserved",
+    "providerInvocationRequested",
+    "providerInvocationObserved",
+    "providerProcessStarted",
+    "providerModelUsed",
+    "providerDataDisclosed",
+    "providerInferenceStarted",
+    "providerInferenceCompleted",
+    "providerInvocationRejected",
+    "providerInvocationCompleted",
+    "providerInvocationFailed",
+    "providerInvocationCancelled",
+    "hypothesisSetCreated",
+    "projectWriteAuthorityBound",
+    "projectWriteLeaseAcquired",
+    "experimentHandoffCreated",
+    "experimentResolved",
 }
 
 
@@ -102,6 +171,100 @@ def _safe_semantic_id(value: Any, *, maximum: int = 200) -> str | None:
     if not all(character.isalnum() or character in "._:-" for character in value):
         return None
     return value
+
+
+def _safe_semantic_ids(value: Any, *, maximum_items: int = 256) -> list[str]:
+    """Extract only bounded semantic identifiers from an untrusted JSON array."""
+
+    if not isinstance(value, list) or len(value) > maximum_items:
+        return []
+    result: list[str] = []
+    for item in value:
+        semantic_id = _safe_semantic_id(item)
+        if semantic_id is None:
+            return []
+        result.append(semantic_id)
+    return list(dict.fromkeys(result))
+
+
+def _safe_semantic_version(value: Any, *, maximum: int = 128) -> str | None:
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= maximum
+        or not value.isascii()
+        or not value[0].isalnum()
+        or ".." in value
+        or "://" in value
+        or "\\" in value
+        or not all(character.isalnum() or character in "._:/-" for character in value)
+    ):
+        return None
+    return value
+
+
+def _safe_sha256(value: Any, *, prefixed: bool = False) -> str | None:
+    if not isinstance(value, str):
+        return None
+    if prefixed and not value.startswith("sha256:"):
+        return None
+    digest = value[7:] if prefixed else value
+    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+        return None
+    return f"sha256:{digest}" if prefixed else digest
+
+
+def _safe_finite_number(value: Any) -> int | float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value if math.isfinite(float(value)) else None
+
+
+def _manifest_semantics(value: Any) -> dict[str, Any]:
+    """Project the small public subset of a validated manifest JSON document.
+
+    Parameters, descriptions, source material, and unknown extension fields are deliberately
+    omitted. A malformed document produces an empty semantic summary rather than raw fallback.
+    """
+
+    if not isinstance(value, dict):
+        return {}
+    capabilities = value.get("capabilities")
+    capability_names: list[str] = []
+    if isinstance(capabilities, list) and len(capabilities) <= 256:
+        for claim in capabilities:
+            if not isinstance(claim, dict):
+                capability_names = []
+                break
+            name = _safe_semantic_id(claim.get("name"))
+            if name is None:
+                capability_names = []
+                break
+            capability_names.append(name)
+    models = _safe_semantic_ids(value.get("models"), maximum_items=128)
+    result: dict[str, Any] = {
+        "capabilityNames": sorted(set(capability_names)),
+        "models": models,
+    }
+    for source, target, allowed in (
+        ("locality", "locality", {"local", "remote", "unknown"}),
+        ("privacy", "privacy", {"public", "internal", "sensitive", "restricted", "unknown"}),
+        ("costMode", "costMode", {"subscription", "localFree", "paid", "metered", "unknown"}),
+    ):
+        candidate = value.get(source)
+        result[target] = candidate if candidate in allowed else "unknown"
+    max_concurrency = value.get("maxConcurrency")
+    result["maxConcurrency"] = (
+        max_concurrency
+        if isinstance(max_concurrency, int)
+        and not isinstance(max_concurrency, bool)
+        and max_concurrency > 0
+        else None
+    )
+    incremental_cost = _safe_finite_number(value.get("incrementalCostUSD"))
+    result["incrementalCostUSD"] = (
+        incremental_cost if incremental_cost is not None and incremental_cost >= 0 else None
+    )
+    return result
 
 
 def _provider_runtime_profile(value: Any) -> dict[str, Any] | None:
@@ -243,6 +406,31 @@ def _public_external_identifier(value: str | None) -> str | None:
     if "://" in candidate or lowered.startswith("file:"):
         return None
     if PurePosixPath(candidate).is_absolute() or PureWindowsPath(candidate).is_absolute():
+        return None
+    return candidate
+
+
+def _public_provider_model(value: str | None) -> str | None:
+    """Return a model identifier only when it is safe as observer-facing metadata."""
+
+    if value is None:
+        return None
+    candidate = str(redact_sensitive(value)).strip()
+    if candidate != value.strip() or _safe_semantic_id(candidate, maximum=256) is None:
+        return None
+    lowered = candidate.casefold().replace("_", "-")
+    credential_markers = (
+        "api-key",
+        "bearer",
+        "cookie",
+        "credential",
+        "password",
+        "private-key",
+        "secret",
+        "session-token",
+        "token",
+    )
+    if any(marker in lowered for marker in credential_markers):
         return None
     return candidate
 
@@ -524,6 +712,730 @@ class SupervisorProjection:
     def _rows(self, query: str, parameters: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         with self.store.connect() as connection:
             return [dict(row) for row in connection.execute(query, parameters).fetchall()]
+
+    def fabric_capabilities(self) -> list[dict[str, Any]]:
+        """Return current Worker capability heads without exposing either private JSON column."""
+
+        rows = self._rows(
+            "SELECT m.id AS manifest_id,m.worker_id,m.revision,m.schema_version,"
+            "m.catalog_version,m.provider_id,m.adapter_kind,m.definition_sha256,"
+            "m.observed_at AS manifest_observed_at,m.valid_until,m.manifest_json,"
+            "h.generation AS head_generation,h.updated_at AS head_updated_at,w.node_id,"
+            "o.id AS observation_id,o.version AS observation_version,o.health,o.active_jobs,"
+            "o.subscription_state,o.quota_state,o.quota_freshness,"
+            "o.observed_at AS observation_observed_at "
+            "FROM worker_capability_manifest_heads h "
+            "JOIN worker_capability_manifests m "
+            "ON m.worker_id=h.worker_id AND m.id=h.manifest_id "
+            "JOIN workers w ON w.id=m.worker_id "
+            "LEFT JOIN worker_capability_observations o ON o.worker_id=m.worker_id "
+            "AND o.manifest_id=m.id "
+            "AND o.version=(SELECT MAX(latest.version) "
+            "FROM worker_capability_observations latest WHERE latest.worker_id=m.worker_id "
+            "AND latest.manifest_id=m.id) "
+            "ORDER BY m.worker_id"
+        )
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            manifest_id = _safe_semantic_id(row["manifest_id"])
+            worker_id = _safe_semantic_id(row["worker_id"])
+            node_id = _safe_semantic_id(row["node_id"])
+            provider_id = _safe_semantic_id(row["provider_id"])
+            adapter_kind = _safe_semantic_id(row["adapter_kind"])
+            if None in {manifest_id, worker_id, node_id, provider_id, adapter_kind}:
+                continue
+            semantics = _manifest_semantics(_json(row["manifest_json"], {}))
+            manifest = {
+                "id": manifest_id,
+                "revision": int(row["revision"]),
+                "schemaVersion": _safe_semantic_version(row["schema_version"]),
+                "catalogVersion": _safe_semantic_version(row["catalog_version"]),
+                "providerID": provider_id,
+                "adapterKind": adapter_kind,
+                "definitionSHA256": _safe_sha256(row["definition_sha256"], prefixed=True),
+                "capabilityNames": semantics.get("capabilityNames", []),
+                "models": semantics.get("models", []),
+                "locality": semantics.get("locality", "unknown"),
+                "privacy": semantics.get("privacy", "unknown"),
+                "costMode": semantics.get("costMode", "unknown"),
+                "incrementalCostUSD": semantics.get("incrementalCostUSD"),
+                "maxConcurrency": semantics.get("maxConcurrency"),
+                "observedAt": row["manifest_observed_at"],
+                "validUntil": row["valid_until"],
+                "headGeneration": int(row["head_generation"]),
+                "headUpdatedAt": row["head_updated_at"],
+            }
+            observation = None
+            observation_id = _safe_semantic_id(row["observation_id"])
+            if observation_id is not None:
+                active_jobs = row["active_jobs"]
+                observation = {
+                    "id": observation_id,
+                    "version": int(row["observation_version"]),
+                    "health": row["health"],
+                    "activeJobs": (
+                        int(active_jobs)
+                        if isinstance(active_jobs, int)
+                        and not isinstance(active_jobs, bool)
+                        and active_jobs >= 0
+                        else None
+                    ),
+                    "subscriptionState": row["subscription_state"],
+                    "quotaState": row["quota_state"],
+                    "quotaFreshness": row["quota_freshness"],
+                    "observedAt": row["observation_observed_at"],
+                }
+            result.append(
+                {
+                    "workerID": worker_id,
+                    "nodeID": node_id,
+                    "manifest": manifest,
+                    "observation": observation,
+                }
+            )
+        return result
+
+    def execution_plane(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        rows = self._rows(
+            "SELECT observation.id,observation.worker_id,observation.node_id,"
+            "observation.version,observation.discovered,observation.configured,"
+            "observation.authenticated,observation.authorized,observation.platform_approval,"
+            "observation.reachable,observation.runtime_available,observation.healthy,"
+            "observation.capacity_available,observation.protocol_version,"
+            "observation.reason_codes_json,observation.observed_at,observation.valid_until "
+            "FROM worker_execution_observations observation WHERE observation.version=("
+            "SELECT MAX(latest.version) FROM worker_execution_observations latest "
+            "WHERE latest.worker_id=observation.worker_id) ORDER BY observation.worker_id LIMIT ?",
+            (limit,),
+        )
+        return [
+            {
+                "observationID": _safe_semantic_id(row["id"]),
+                "workerID": _safe_semantic_id(row["worker_id"]),
+                "nodeID": _safe_semantic_id(row["node_id"]),
+                "version": int(row["version"]),
+                "facets": {
+                    "discovered": row["discovered"],
+                    "configured": row["configured"],
+                    "authenticated": row["authenticated"],
+                    "authorized": row["authorized"],
+                    "platformApproval": row["platform_approval"],
+                    "reachable": row["reachable"],
+                    "runtimeAvailable": row["runtime_available"],
+                    "healthy": row["healthy"],
+                    "capacityAvailable": row["capacity_available"],
+                },
+                "protocolVersion": _safe_semantic_version(row["protocol_version"]),
+                "reasonCodes": [
+                    value
+                    for value in _json(row["reason_codes_json"], [])
+                    if _safe_semantic_id(value) is not None
+                ],
+                "observedAt": row["observed_at"],
+                "validUntil": row["valid_until"],
+            }
+            for row in rows
+        ]
+
+    def fabric_authorizations(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        rows = self._rows(
+            "SELECT id,version,parent_id,project_id,goal_id,root_task_id,subject,schema_version,"
+            "inheritance_policy,permission_ceiling,capabilities_json,actions_json,resources_json,"
+            "allowed_providers_json,allowed_worker_classes_json,allowed_data_classes_json,"
+            "denied_data_classes_json,allowed_action_classes_json,denied_action_classes_json,"
+            "user_approval_state,platform_approval_required,platform_approval_state,"
+            "issued_at,expires_at,definition_sha256 FROM authorization_envelopes "
+            "ORDER BY created_at,id LIMIT ?",
+            (limit,),
+        )
+        return [
+            {
+                "authorizationID": _safe_semantic_id(row["id"]),
+                "version": int(row["version"]),
+                "parentID": _safe_semantic_id(row["parent_id"]),
+                "projectID": _safe_semantic_id(row["project_id"]),
+                "goalID": _safe_semantic_id(row["goal_id"]),
+                "rootTaskID": _safe_semantic_id(row["root_task_id"]),
+                "subject": _safe_semantic_id(row["subject"]),
+                "schemaVersion": _safe_semantic_version(row["schema_version"]),
+                "permissionCeiling": row["permission_ceiling"],
+                "inheritancePolicy": row["inheritance_policy"],
+                "capabilities": _json(row["capabilities_json"], []),
+                "actions": _json(row["actions_json"], []),
+                "resources": _json(row["resources_json"], []),
+                "allowedProviders": _json(row["allowed_providers_json"], []),
+                "allowedWorkerClasses": _json(row["allowed_worker_classes_json"], []),
+                "allowedDataClasses": _json(row["allowed_data_classes_json"], []),
+                "deniedDataClasses": _json(row["denied_data_classes_json"], []),
+                "allowedActionClasses": _json(row["allowed_action_classes_json"], []),
+                "deniedActionClasses": _json(row["denied_action_classes_json"], []),
+                "userApprovalState": row["user_approval_state"],
+                "platformApprovalRequired": bool(row["platform_approval_required"]),
+                "platformApprovalState": row["platform_approval_state"],
+                "issuedAt": row["issued_at"],
+                "expiresAt": row["expires_at"],
+                "definitionSHA256": _safe_sha256(row["definition_sha256"]),
+            }
+            for row in rows
+        ]
+
+    def data_provenance(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        rows = self._rows(
+            "SELECT movement.id,movement.packet_id,movement.run_id,movement.destination_kind,"
+            "movement.purpose,movement.disclosure_state,movement.occurred_at,"
+            "packet.project_id,packet.task_id,packet.classification,packet.byte_count,"
+            "packet.contains_credentials FROM data_movement_events movement "
+            "JOIN data_evidence_packets packet ON packet.id=movement.packet_id "
+            "ORDER BY movement.occurred_at,movement.id LIMIT ?",
+            (limit,),
+        )
+        return [
+            {
+                "movementID": _safe_semantic_id(row["id"]),
+                "packetID": _safe_semantic_id(row["packet_id"]),
+                "projectID": _safe_semantic_id(row["project_id"]),
+                "taskID": _safe_semantic_id(row["task_id"]),
+                "runID": _safe_semantic_id(row["run_id"]),
+                "classification": row["classification"],
+                "byteCount": row["byte_count"],
+                "containsCredentials": row["contains_credentials"],
+                "destinationKind": row["destination_kind"],
+                "purpose": row["purpose"],
+                "disclosureState": row["disclosure_state"],
+                "occurredAt": row["occurred_at"],
+            }
+            for row in rows
+        ]
+
+    def provider_invocations_v2(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        rows = self._rows(
+            "SELECT invocation.id,invocation.run_id,invocation.ordinal,invocation.provider,"
+            "invocation.requested_model,invocation.envelope_id,invocation.created_at,"
+            "observation.stage,observation.model_used_state,observation.model_used,"
+            "observation.data_disclosed_state,observation.detail_code,"
+            "observation.observed_at FROM provider_invocations_v2 invocation "
+            "LEFT JOIN provider_invocation_events_v2 observation "
+            "ON observation.invocation_id=invocation.id AND observation.ordinal=("
+            "SELECT MAX(latest.ordinal) FROM provider_invocation_events_v2 latest "
+            "WHERE latest.invocation_id=invocation.id) "
+            "ORDER BY invocation.created_at,invocation.id LIMIT ?",
+            (limit,),
+        )
+        return [
+            {
+                "invocationID": _safe_semantic_id(row["id"]),
+                "runID": _safe_semantic_id(row["run_id"]),
+                "ordinal": int(row["ordinal"]),
+                "provider": _safe_semantic_id(row["provider"]),
+                "requestedModel": _public_provider_model(row["requested_model"]),
+                "authorizationID": _safe_semantic_id(row["envelope_id"]),
+                "stage": row["stage"],
+                "modelUsed": {
+                    "state": row["model_used_state"],
+                    "model": _public_provider_model(row["model_used"]),
+                },
+                "dataDisclosed": row["data_disclosed_state"],
+                "detailCode": _safe_semantic_id(row["detail_code"]),
+                "observedAt": row["observed_at"],
+                "createdAt": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    def hypothesis_sets(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        rows = self._rows(
+            "SELECT id,task_id,source_attempt,fusion_id,state,input_sha256,created_at "
+            "FROM hypothesis_sets ORDER BY created_at,id LIMIT ?",
+            (limit,),
+        )
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            hypotheses = self._rows(
+                "SELECT id,claim_key,value_sha256,state FROM hypotheses WHERE set_id=? "
+                "ORDER BY claim_key,value_sha256,id",
+                (row["id"],),
+            )
+            proposals = self._rows(
+                "SELECT id,proposal_key,operation,risk_class,expected_information_gain,"
+                "envelope_id,state,created_at FROM experiment_proposals WHERE set_id=? "
+                "ORDER BY created_at,id",
+                (row["id"],),
+            )
+            proposal_ids = tuple(item["id"] for item in proposals)
+            handoffs: list[dict[str, Any]] = []
+            experiment_results: list[dict[str, Any]] = []
+            if proposal_ids:
+                placeholders = ",".join("?" for _ in proposal_ids)
+                handoffs = self._rows(
+                    "SELECT id,proposal_id,owner_kind,owner_id,content_kind,content_sha256,"
+                    "expected_result_schema,state,expires_at,created_at "
+                    f"FROM structured_executor_handoffs WHERE proposal_id IN ({placeholders}) "
+                    "ORDER BY created_at,id",
+                    proposal_ids,
+                )
+                experiment_results = self._rows(
+                    "SELECT result.id,result.handoff_id,result.proposal_id,result.executor_id,"
+                    "result.result_sha256,result.status,result.created_at "
+                    "FROM experiment_results result "
+                    f"WHERE result.proposal_id IN ({placeholders}) ORDER BY result.created_at,id",
+                    proposal_ids,
+                )
+            result.append(
+                {
+                    "hypothesisSetID": _safe_semantic_id(row["id"]),
+                    "taskID": _safe_semantic_id(row["task_id"]),
+                    "sourceAttempt": int(row["source_attempt"]),
+                    "fusionID": _safe_semantic_id(row["fusion_id"]),
+                    "state": row["state"],
+                    "inputSHA256": _safe_sha256(row["input_sha256"]),
+                    "createdAt": row["created_at"],
+                    "hypotheses": [
+                        {
+                            "hypothesisID": _safe_semantic_id(item["id"]),
+                            "claimKey": _safe_semantic_id(item["claim_key"]),
+                            "valueSHA256": _safe_sha256(item["value_sha256"]),
+                            "state": item["state"],
+                        }
+                        for item in hypotheses
+                    ],
+                    "experiments": [
+                        {
+                            "proposalID": _safe_semantic_id(item["id"]),
+                            "proposalKey": _safe_semantic_id(item["proposal_key"]),
+                            "operation": _safe_semantic_id(item["operation"]),
+                            "riskClass": item["risk_class"],
+                            "expectedInformationGain": _safe_finite_number(
+                                item["expected_information_gain"]
+                            ),
+                            "authorizationID": _safe_semantic_id(item["envelope_id"]),
+                            "state": item["state"],
+                            "createdAt": item["created_at"],
+                        }
+                        for item in proposals
+                    ],
+                    "handoffs": [
+                        {
+                            "handoffID": _safe_semantic_id(item["id"]),
+                            "proposalID": _safe_semantic_id(item["proposal_id"]),
+                            "ownerKind": item["owner_kind"],
+                            "ownerID": _safe_semantic_id(item["owner_id"]),
+                            "contentKind": item["content_kind"],
+                            "contentSHA256": _safe_sha256(item["content_sha256"]),
+                            "expectedResultSchema": _safe_semantic_version(
+                                item["expected_result_schema"]
+                            ),
+                            "state": item["state"],
+                            "expiresAt": item["expires_at"],
+                            "createdAt": item["created_at"],
+                        }
+                        for item in handoffs
+                    ],
+                    "experimentResults": [
+                        {
+                            "resultID": _safe_semantic_id(item["id"]),
+                            "handoffID": _safe_semantic_id(item["handoff_id"]),
+                            "proposalID": _safe_semantic_id(item["proposal_id"]),
+                            "executorID": _safe_semantic_id(item["executor_id"]),
+                            "resultSHA256": _safe_sha256(item["result_sha256"]),
+                            "status": item["status"],
+                            "createdAt": item["created_at"],
+                        }
+                        for item in experiment_results
+                    ],
+                }
+            )
+        return result
+
+    def project_write_authorities(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        rows = self._rows(
+            "SELECT authority.project_id,authority.owner_kind,authority.owner_id,authority.node_id,"
+            "authority.envelope_id,authority.state,authority.generation,authority.created_at,"
+            "lease.id AS lease_id,lease.task_id,lease.run_id,lease.generation AS lease_generation,"
+            "lease.state AS lease_state,lease.acquired_at,lease.expires_at "
+            "FROM project_write_authorities authority LEFT JOIN project_write_leases lease "
+            "ON lease.project_id=authority.project_id AND lease.state='active' "
+            "ORDER BY authority.project_id LIMIT ?",
+            (limit,),
+        )
+        return [
+            {
+                "projectID": _safe_semantic_id(row["project_id"]),
+                "ownerKind": row["owner_kind"],
+                "ownerID": _safe_semantic_id(row["owner_id"]),
+                "nodeID": _safe_semantic_id(row["node_id"]),
+                "authorizationID": _safe_semantic_id(row["envelope_id"]),
+                "state": row["state"],
+                "generation": int(row["generation"]),
+                "createdAt": row["created_at"],
+                "activeLease": (
+                    {
+                        "leaseID": _safe_semantic_id(row["lease_id"]),
+                        "taskID": _safe_semantic_id(row["task_id"]),
+                        "runID": _safe_semantic_id(row["run_id"]),
+                        "generation": int(row["lease_generation"]),
+                        "state": row["lease_state"],
+                        "acquiredAt": row["acquired_at"],
+                        "expiresAt": row["expires_at"],
+                    }
+                    if row["lease_id"] is not None
+                    else None
+                ),
+            }
+            for row in rows
+        ]
+
+    def fabric_routing(
+        self, *, task_id: str | None = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        parameters: list[Any] = []
+        if task_id is not None:
+            clauses.append("task_id=?")
+            parameters.append(task_id)
+        query = (
+            "SELECT id,task_id,topology,policy_version,selected_workers_json,created_at "
+            "FROM routing_decisions"
+        )
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY created_at DESC,id LIMIT ?"
+        decisions = self._rows(query, (*parameters, limit))
+        if not decisions:
+            return []
+        decision_ids = tuple(row["id"] for row in decisions)
+        placeholders = ",".join("?" for _ in decision_ids)
+        candidate_rows = self._rows(
+            "SELECT decision_id,worker_id,selected,score,rejection_code "
+            f"FROM routing_candidates WHERE decision_id IN ({placeholders}) "
+            "ORDER BY decision_id,selected DESC,score DESC,worker_id,rejection_code",
+            decision_ids,
+        )
+        candidates_by_decision: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in candidate_rows:
+            worker_id = _safe_semantic_id(row["worker_id"])
+            if worker_id is None:
+                continue
+            candidates_by_decision[row["decision_id"]].append(
+                {
+                    "workerID": worker_id,
+                    "selected": bool(row["selected"]),
+                    "score": _safe_finite_number(row["score"]),
+                    "rejectionCode": _safe_semantic_id(row["rejection_code"]),
+                }
+            )
+        result: list[dict[str, Any]] = []
+        for row in decisions:
+            selected = _safe_semantic_ids(_json(row["selected_workers_json"], []))
+            result.append(
+                {
+                    "id": row["id"],
+                    "taskID": row["task_id"],
+                    "topology": _safe_semantic_id(row["topology"]),
+                    "policyVersion": _safe_semantic_version(row["policy_version"]),
+                    "selectedWorkerIDs": selected,
+                    "candidates": candidates_by_decision[row["id"]],
+                    "createdAt": row["created_at"],
+                }
+            )
+        return result
+
+    def interactions(
+        self,
+        *,
+        task_id: str | None = None,
+        state: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        parameters: list[Any] = []
+        for column, value in (("e.task_id", task_id), ("e.state", state)):
+            if value is not None:
+                clauses.append(f"{column}=?")
+                parameters.append(value)
+        query = (
+            "SELECT e.id,e.project_id,e.task_id,e.run_id,e.worker_id,e.adapter_kind,e.channel,"
+            "e.app_id,e.app_version,e.plan_sha256,e.state,e.observation_count,"
+            "e.grounding_count,e.started_at,e.updated_at,e.finished_at,"
+            "t.id AS trajectory_id,t.verified AS trajectory_verified,"
+            "t.created_at AS trajectory_created_at FROM interaction_executions e "
+            "LEFT JOIN interaction_trajectories t ON t.execution_id=e.id"
+        )
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY e.started_at DESC,e.id LIMIT ?"
+        rows = self._rows(query, (*parameters, limit))
+        return [self._interaction(row) for row in rows]
+
+    @staticmethod
+    def _interaction(row: dict[str, Any]) -> dict[str, Any]:
+        trajectory = None
+        if row["trajectory_id"] is not None:
+            trajectory = {
+                "id": row["trajectory_id"],
+                "verified": bool(row["trajectory_verified"]),
+                "createdAt": row["trajectory_created_at"],
+            }
+        return {
+            "id": row["id"],
+            "projectID": row["project_id"],
+            "taskID": row["task_id"],
+            "runID": row["run_id"],
+            "workerID": row["worker_id"],
+            "adapterKind": _safe_semantic_id(row["adapter_kind"]),
+            "channel": _safe_semantic_id(row["channel"]),
+            "appID": _safe_semantic_id(row["app_id"]),
+            "appVersion": _safe_semantic_id(row["app_version"], maximum=128),
+            "planSHA256": _safe_sha256(row["plan_sha256"]),
+            "state": row["state"],
+            "observationCount": int(row["observation_count"]),
+            "groundingCount": int(row["grounding_count"]),
+            "startedAt": row["started_at"],
+            "updatedAt": row["updated_at"],
+            "finishedAt": row["finished_at"],
+            "trajectory": trajectory,
+        }
+
+    def interaction_resources(
+        self,
+        *,
+        resource_type: str | None = None,
+        active_only: bool = False,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        parameters: list[Any] = []
+        if resource_type is not None:
+            clauses.append("r.resource_type=?")
+            parameters.append(resource_type)
+        if active_only:
+            clauses.append("l.lease_id IS NOT NULL")
+        query = (
+            "SELECT r.resource_key,r.resource_type,r.scope_id,r.created_at,r.updated_at,"
+            "l.lease_id,l.lease_group_id,l.task_id,l.run_id,l.generation,l.state AS lease_state,"
+            "l.acquired_at,l.heartbeat_at,l.expires_at "
+            "FROM interaction_resources r LEFT JOIN interaction_resource_leases l "
+            "ON l.resource_key=r.resource_key AND l.state='active'"
+        )
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY r.resource_key LIMIT ?"
+        rows = self._rows(query, (*parameters, limit))
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            lease = None
+            if row["lease_id"] is not None:
+                lease = {
+                    "leaseID": row["lease_id"],
+                    "leaseGroupID": row["lease_group_id"],
+                    "taskID": row["task_id"],
+                    "runID": row["run_id"],
+                    "generation": int(row["generation"]),
+                    "state": row["lease_state"],
+                    "acquiredAt": row["acquired_at"],
+                    "heartbeatAt": row["heartbeat_at"],
+                    "expiresAt": row["expires_at"],
+                }
+            result.append(
+                {
+                    "resourceKey": _safe_semantic_id(row["resource_key"]),
+                    "resourceType": row["resource_type"],
+                    "scopeID": _safe_semantic_id(row["scope_id"]),
+                    "createdAt": row["created_at"],
+                    "updatedAt": row["updated_at"],
+                    "activeLease": lease,
+                }
+            )
+        return result
+
+    def semantic_skills(
+        self,
+        *,
+        app_id: str | None = None,
+        lifecycle: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        parameters: list[Any] = []
+        for column, value in (("s.app_id", app_id), ("s.lifecycle", lifecycle)):
+            if value is not None:
+                clauses.append(f"{column}=?")
+                parameters.append(value)
+        query = (
+            "SELECT s.id,s.app_id,s.semantic_action,s.app_version_constraint,s.lifecycle,"
+            "s.revision,s.success_count,s.failure_count,s.confidence,s.source_trajectory_id,"
+            "s.last_verified_at,s.created_at,s.updated_at,COUNT(e.trajectory_id) AS evidence_count,"
+            "COALESCE(SUM(e.verified),0) AS verified_evidence_count "
+            "FROM semantic_skills s LEFT JOIN semantic_skill_evidence e ON e.skill_id=s.id"
+        )
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " GROUP BY s.id ORDER BY s.updated_at DESC,s.id LIMIT ?"
+        rows = self._rows(query, (*parameters, limit))
+        return [
+            {
+                "id": row["id"],
+                "appID": _safe_semantic_id(row["app_id"]),
+                "semanticAction": _safe_semantic_id(row["semantic_action"]),
+                "appVersionConstraint": _safe_semantic_id(
+                    row["app_version_constraint"], maximum=128
+                ),
+                "lifecycle": row["lifecycle"],
+                "revision": int(row["revision"]),
+                "successCount": int(row["success_count"]),
+                "failureCount": int(row["failure_count"]),
+                "confidence": _safe_finite_number(row["confidence"]),
+                "sourceTrajectoryID": row["source_trajectory_id"],
+                "evidenceCount": int(row["evidence_count"]),
+                "verifiedEvidenceCount": int(row["verified_evidence_count"]),
+                "lastVerifiedAt": row["last_verified_at"],
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+            }
+            for row in rows
+        ]
+
+    def ui_graph(self, *, app_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+        parameters: tuple[Any, ...]
+        query = (
+            "SELECT app_id,app_version,from_state_sha256,semantic_action,to_state_sha256,"
+            "success_count,failure_count,last_verified_at,confidence,created_at,updated_at "
+            "FROM ui_graph_edges"
+        )
+        if app_id is None:
+            parameters = (limit,)
+        else:
+            query += " WHERE app_id=?"
+            parameters = (app_id, limit)
+        query += " ORDER BY updated_at DESC,app_id,semantic_action LIMIT ?"
+        return [
+            {
+                "appID": _safe_semantic_id(row["app_id"]),
+                "appVersion": _safe_semantic_id(row["app_version"], maximum=128),
+                "fromStateSHA256": _safe_sha256(row["from_state_sha256"]),
+                "semanticAction": _safe_semantic_id(row["semantic_action"]),
+                "toStateSHA256": _safe_sha256(row["to_state_sha256"]),
+                "successCount": int(row["success_count"]),
+                "failureCount": int(row["failure_count"]),
+                "lastVerifiedAt": row["last_verified_at"],
+                "confidence": _safe_finite_number(row["confidence"]),
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+            }
+            for row in self._rows(query, parameters)
+        ]
+
+    def spawn_proposals(
+        self,
+        *,
+        goal_id: str | None = None,
+        parent_task_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        parameters: list[Any] = []
+        for column, value in (("p.goal_id", goal_id), ("p.parent_task_id", parent_task_id)):
+            if value is not None:
+                clauses.append(f"{column}=?")
+                parameters.append(value)
+        query = (
+            "SELECT p.id,p.goal_id,p.parent_task_id,p.source_run_id,p.proposal_key,"
+            "p.semantic_digest,p.source_result_sha256,p.depth,p.plan_version,p.steer_version,"
+            "p.task_definition_revision,p.created_at,d.id AS decision_id,d.revision AS "
+            "decision_revision,d.outcome,d.policy_version,d.reason_code,d.child_task_id,"
+            "d.created_at AS decision_created_at FROM child_work_proposals p "
+            "LEFT JOIN child_work_proposal_decisions d ON d.proposal_id=p.id "
+            "AND d.revision=(SELECT MAX(latest.revision) FROM child_work_proposal_decisions "
+            "latest WHERE latest.proposal_id=p.id)"
+        )
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY p.created_at DESC,p.id LIMIT ?"
+        rows = self._rows(query, (*parameters, limit))
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            decision = None
+            if row["decision_id"] is not None:
+                decision = {
+                    "id": row["decision_id"],
+                    "revision": int(row["decision_revision"]),
+                    "outcome": row["outcome"],
+                    "policyVersion": _safe_semantic_version(row["policy_version"]),
+                    "reasonCode": _safe_semantic_id(row["reason_code"]),
+                    "childTaskID": row["child_task_id"],
+                    "createdAt": row["decision_created_at"],
+                }
+            result.append(
+                {
+                    "id": row["id"],
+                    "goalID": row["goal_id"],
+                    "parentTaskID": row["parent_task_id"],
+                    "sourceRunID": row["source_run_id"],
+                    "proposalKey": _safe_semantic_id(row["proposal_key"]),
+                    "semanticDigest": _safe_sha256(row["semantic_digest"]),
+                    "sourceResultSHA256": _safe_sha256(row["source_result_sha256"]),
+                    "depth": int(row["depth"]),
+                    "planVersion": int(row["plan_version"]),
+                    "steerVersion": int(row["steer_version"]),
+                    "taskDefinitionRevision": int(row["task_definition_revision"]),
+                    "createdAt": row["created_at"],
+                    "latestDecision": decision,
+                }
+            )
+        return result
+
+    def fusion_decisions(
+        self, *, task_id: str | None = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        parameters: tuple[Any, ...]
+        query = (
+            "SELECT id,task_id,source_attempt,policy_version,input_set_sha256,classification,"
+            "confidence,verification_required,created_at FROM result_fusion_decisions"
+        )
+        if task_id is None:
+            parameters = (limit,)
+        else:
+            query += " WHERE task_id=?"
+            parameters = (task_id, limit)
+        query += " ORDER BY created_at DESC,id LIMIT ?"
+        decisions = self._rows(query, parameters)
+        if not decisions:
+            return []
+        decision_ids = tuple(row["id"] for row in decisions)
+        placeholders = ",".join("?" for _ in decision_ids)
+        handoff_rows = self._rows(
+            "SELECT id,fusion_id,verification_scope_id,task_definition_revision,"
+            "source_attempt,steer_version,created_at "
+            f"FROM fusion_verification_handoffs WHERE fusion_id IN ({placeholders}) "
+            "ORDER BY fusion_id,created_at,id",
+            decision_ids,
+        )
+        handoffs_by_fusion: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in handoff_rows:
+            handoffs_by_fusion[row["fusion_id"]].append(
+                {
+                    "id": row["id"],
+                    "verificationScopeID": row["verification_scope_id"],
+                    "taskDefinitionRevision": int(row["task_definition_revision"]),
+                    "sourceAttempt": int(row["source_attempt"]),
+                    "steerVersion": int(row["steer_version"]),
+                    "createdAt": row["created_at"],
+                }
+            )
+        return [
+            {
+                "id": row["id"],
+                "taskID": row["task_id"],
+                "sourceAttempt": int(row["source_attempt"]),
+                "policyVersion": _safe_semantic_version(row["policy_version"]),
+                "inputSetSHA256": _safe_sha256(row["input_set_sha256"]),
+                "classification": row["classification"],
+                "confidence": _safe_finite_number(row["confidence"]),
+                "verificationRequired": bool(row["verification_required"]),
+                "createdAt": row["created_at"],
+                "verificationHandoffs": handoffs_by_fusion[row["id"]],
+            }
+            for row in decisions
+        ]
 
     def _usage_rows(self, *, column: str, identifier: str) -> list[dict[str, Any]]:
         if column not in {"task_id", "worker_id", "run_id"}:

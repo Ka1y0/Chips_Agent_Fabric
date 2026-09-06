@@ -353,6 +353,14 @@ def test_existing_v01_database_upgrades_without_rewriting_prior_migrations(tmp_p
         "0011_durable_provider_jobs",
         "0012_task_verification_scopes",
         "0013_local_worker_protocol_v2",
+        "0014_fabric_vertical_slice",
+        "0015_fabric_hardening",
+        "0016_multi_node_execution_plane",
+        "0017_authority_and_single_writer",
+        "0018_typed_experiment_handoffs",
+        "0019_execution_plane_bootstrap_fencing",
+        "0020_provider_invocation_lifecycle_v2",
+        "0021_windows_node_enrollment",
     ]
     assert {
         "autonomous_goals",
@@ -371,6 +379,13 @@ def test_existing_v01_database_upgrades_without_rewriting_prior_migrations(tmp_p
         "execution_escalations",
         "task_verification_scopes",
         "task_verification_scope_items",
+        "worker_execution_observations",
+        "authorization_envelopes",
+        "provider_invocations_v2",
+        "hypothesis_sets",
+        "node_execution_recovery_leases",
+        "node_execution_recovery_attempts",
+        "node_execution_recovery_events",
     } <= tables
 
 

@@ -33,6 +33,7 @@ from project_supervisor.domain import (
     WorkerState,
     utc_now,
 )
+from project_supervisor.fabric.provider_execution import ProviderInvocationRepository, TriState
 from project_supervisor.runtime import AdapterRegistry, SupervisorRuntime
 from project_supervisor.scheduler import DeterministicScheduler
 from project_supervisor.store import StateStore
@@ -58,6 +59,7 @@ class FakeProvider:
     cancel_calls: int = 0
     unreachable: bool = False
     missing: bool = False
+    emit_data_disclosed_on_resume: bool = False
 
     def complete(self, job_id: str) -> None:
         job = self.jobs[job_id]
@@ -159,6 +161,15 @@ class DurableFakeAdapter(WorkerAdapter):
     ) -> WorkerResult:
         self.provider.resume_calls += 1
         job = self.provider.jobs[handle.provider_job_id]
+        if self.provider.emit_data_disclosed_on_resume and event_sink is not None:
+            await event_sink(
+                WorkerEvent(
+                    request.run_id,
+                    "providerDataDisclosed",
+                    utc_now(),
+                    {"model": "durable-fake-model"},
+                )
+            )
         while job.state is WorkerJobState.KNOWN_RUNNING:
             await job.changed.wait()
             job.changed.clear()
@@ -342,6 +353,39 @@ async def test_restart_reattaches_running_job_without_duplicate_launch(tmp_path)
     assert task_id in peer._active
     provider.complete(store.get_provider_job(run_id)["provider_job_id"])
     await peer.wait_for_active(task_ids={task_id})
+    assert store.get_task(task_id)["state"] == TaskState.REVIEWING.value
+    assert store.get_worker_run(run_id)["state"] == RunState.COMPLETED.value
+    assert provider.start_calls == 1
+
+
+async def test_restart_folds_authoritative_provider_events_emitted_during_resume(tmp_path) -> None:
+    provider = FakeProvider(emit_data_disclosed_on_resume=True)
+    store, task_id, run_id = await launch_and_crash(tmp_path, provider)
+    _peer_store, peer, _adapter = runtime_fixture(tmp_path, provider, runtime_id="runtime-b")
+
+    await peer.recover(task_ids={task_id})
+    provider.complete(store.get_provider_job(run_id)["provider_job_id"])
+    await peer.wait_for_active(task_ids={task_id})
+
+    invocation = ProviderInvocationRepository(store).get(f"provider-invocation:{run_id}:1")
+    assert invocation.data_disclosed is TriState.YES
+    with store.connect() as connection:
+        stages = [
+            row["stage"]
+            for row in connection.execute(
+                "SELECT stage FROM provider_invocation_events_v2 WHERE invocation_id=? "
+                "ORDER BY ordinal",
+                (f"provider-invocation:{run_id}:1",),
+            ).fetchall()
+        ]
+    assert stages == [
+        "requested",
+        "dispatched",
+        "accepted",
+        "dataDisclosed",
+        "inferenceStarted",
+        "inferenceCompleted",
+    ]
     assert store.get_task(task_id)["state"] == TaskState.REVIEWING.value
     assert store.get_worker_run(run_id)["state"] == RunState.COMPLETED.value
     assert provider.start_calls == 1
@@ -675,6 +719,26 @@ async def test_native_idempotency_replays_uncertain_launch_without_duplicate_job
     telemetry = peer.telemetry.list(task_id=task_id)
     assert len(telemetry) == 1
     assert telemetry[0].outcome.value == "success"
+    invocation = ProviderInvocationRepository(store).get(f"provider-invocation:{run_id}:1")
+    assert invocation.terminal
+    assert invocation.model_used is TriState.YES
+    assert invocation.model == "durable-fake-model"
+    with store.connect() as connection:
+        stages = [
+            row["stage"]
+            for row in connection.execute(
+                "SELECT stage FROM provider_invocation_events_v2 WHERE invocation_id=? "
+                "ORDER BY ordinal",
+                (f"provider-invocation:{run_id}:1",),
+            ).fetchall()
+        ]
+    assert stages == [
+        "requested",
+        "dispatched",
+        "outcomeUnknown",
+        "inferenceStarted",
+        "inferenceCompleted",
+    ]
 
 
 async def test_raw_http_launch_error_after_side_effect_is_not_a_definite_rejection(

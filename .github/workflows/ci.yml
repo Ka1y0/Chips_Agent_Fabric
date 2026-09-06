@@ -1,0 +1,173 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Lint, unit/integration, and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install project and quality tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]" build
+
+      - name: Lint
+        run: ruff check --no-cache .
+
+      - name: Check Python syntax
+        run: python -m compileall -q bootstrap src tests scripts
+
+      - name: Run planning boundary regressions
+        run: pytest -q -p no:cacheprovider tests/test_planning_safety_regressions.py
+
+      - name: Run autonomous lease boundary regressions
+        run: pytest -q -p no:cacheprovider tests/test_autonomous_lease_boundaries.py
+
+      - name: Run startup lifecycle and readiness regressions
+        run: |
+          pytest -v --tb=short -p no:cacheprovider \
+            tests/test_autonomous_host_startup.py tests/test_acceptance_readiness.py
+
+      - name: Run Goal inspection and controlled pause-stop regressions
+        run: |
+          pytest -v --tb=short -p no:cacheprovider -p scripts.goal_diagnostics_pytest \
+            tests/test_goal_inspection.py tests/test_goal_diagnostics_pytest.py \
+            tests/test_goal_inspection_integration.py
+
+      - name: Run unit and integration suite
+        # Keep every existing test and assertion. Verbose names and a stack dump
+        # distinguish a stalled test from a slow suite without extending its deadline.
+        run: |
+          pytest \
+            -v --tb=short -p no:cacheprovider -o faulthandler_timeout=60 \
+            -p scripts.goal_diagnostics_pytest \
+            --ignore=tests/test_autonomous_host_subprocess.py \
+            --ignore=tests/test_autonomous_subprocess_acceptance.py \
+            --ignore=tests/test_local_worker_v2_native_cli_subprocess.py \
+            --ignore=tests/test_local_worker_v2_restart_subprocess.py \
+            --ignore=tests/test_runtime_broker_subprocess_phase2.py
+
+      - name: Build distributions
+        run: python -m build
+
+  executable-foundations:
+    name: Local probe, Bridge codec, and installed wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install project and quality tools
+        run: python -m pip install -e ".[dev]" build
+
+      - name: Lint executable foundations
+        run: |
+          ruff check --no-cache src/project_supervisor/local_probe.py \
+            src/project_supervisor/bridge/zlib_codec.py \
+            tests/test_local_probe.py tests/test_bridge_zlib.py
+
+      - name: Test probes and cross-process codec
+        run: pytest -v --tb=short -p no:cacheprovider tests/test_local_probe.py tests/test_bridge_zlib.py
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Install wheel in a clean environment and run without the source checkout
+        run: |
+          python -m venv "$RUNNER_TEMP/fabric-wheel"
+          "$RUNNER_TEMP/fabric-wheel/bin/python" -m pip install dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/fabric-wheel/bin/chips-goal-inspect" --help
+          "$RUNNER_TEMP/fabric-wheel/bin/chips-model-probe" --help
+          "$RUNNER_TEMP/fabric-wheel/bin/chips-model-probe" \
+            --runtime ollama --endpoint http://127.0.0.1:11434 > probe.json
+          "$RUNNER_TEMP/fabric-wheel/bin/python" -I -c '
+          import json, sys
+          from pathlib import Path
+          from project_supervisor import goal_inspection, local_probe
+          from project_supervisor.bridge.zlib_codec import ZlibJSONCodec
+          report = json.loads(Path("probe.json").read_text())
+          assert report["status"] == "dryRun"
+          assert report["runtimeSettingsChanged"] is False
+          assert report["inferenceRequested"] is False
+          assert Path(local_probe.__file__).is_relative_to(Path(sys.prefix))
+          assert Path(goal_inspection.__file__).is_relative_to(Path(sys.prefix))
+          missing = Path("uninitialized-goal-inspection.sqlite3")
+          assert not missing.exists()
+          assert goal_inspection.inspect_goal(missing, "goal")["status"] == "unavailable"
+          assert not missing.exists()
+          assert ZlibJSONCodec.codec_id == "zlib-json/1.0"
+          '
+
+  subprocess-acceptance:
+    name: Acceptance / ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: autonomous host
+            test: tests/test_autonomous_host_subprocess.py
+          - name: restart and multi-iteration
+            test: tests/test_autonomous_subprocess_acceptance.py
+          - name: Local Worker V2 native CLI
+            test: tests/test_local_worker_v2_native_cli_subprocess.py
+          - name: Local Worker V2 restart
+            test: tests/test_local_worker_v2_restart_subprocess.py
+          - name: runtime broker restart fencing
+            test: tests/test_runtime_broker_subprocess_phase2.py
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install project and test tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run isolated subprocess acceptance
+        run: pytest -v --tb=short -p no:cacheprovider "${{ matrix.test }}"

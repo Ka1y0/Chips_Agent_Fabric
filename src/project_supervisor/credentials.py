@@ -14,7 +14,9 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 
 ENV_LOCAL_WORKER_TOKEN = "PROJECT_SUPERVISOR_LOCAL_WORKER_TOKEN"
+ENV_RUNTIME_BROKER_TOKEN = "PROJECT_SUPERVISOR_RUNTIME_BROKER_TOKEN"
 KEYCHAIN_SERVICE = "project-supervisor-local-worker"
+RUNTIME_BROKER_KEYCHAIN_SERVICE = "project-supervisor-runtime-broker"
 
 type CommandRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
 
@@ -80,5 +82,31 @@ def local_worker_token(
         raise CredentialError(
             f"no Local Worker bearer available: set {ENV_LOCAL_WORKER_TOKEN} for this process "
             f"or add Keychain item service={service!r} account={account!r}"
+        )
+    return value
+
+
+def runtime_broker_token(
+    *,
+    account: str,
+    service: str = RUNTIME_BROKER_KEYCHAIN_SERVICE,
+    environ: Mapping[str, str] | None = None,
+    runner: CommandRunner | None = None,
+) -> str:
+    """Return one admitted runtime-broker bearer from process memory or macOS Keychain.
+
+    The short-lived environment override and persisted Keychain service are distinct from Local
+    Worker credentials.  Neither value enters Supervisor JSON configuration or SQLite.
+    """
+
+    environment = environ if environ is not None else os.environ
+    injected = environment.get(ENV_RUNTIME_BROKER_TOKEN)
+    value = (injected if injected and injected.strip() else None) or _from_keychain(
+        service, account, runner or _default_runner
+    )
+    if not value:
+        raise CredentialError(
+            "no runtime broker bearer available from the approved process environment "
+            f"or Keychain service={service!r} account={account!r}"
         )
     return value

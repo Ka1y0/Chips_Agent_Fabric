@@ -41,6 +41,7 @@ from .domain import (
     TaskLabel,
     TaskRequirements,
     TaskState,
+    utc_now,
 )
 from .runtime import AdapterRegistry, SupervisorRuntime
 from .store import StateStore, compact_json, redact_sensitive, timestamp
@@ -879,22 +880,48 @@ class ProductionAutonomyDriver:
         """
 
         inventory: list[dict[str, Any]] = []
-        for worker in self.store.list_workers():
-            try:
-                capabilities = json.loads(worker.get("capabilities_json") or "[]")
-            except (TypeError, json.JSONDecodeError):
-                capabilities = []
+        observed_at = utc_now()
+        for worker in self.store.worker_snapshots():
+            if worker.manifest_schema_version is None:
+                manifest_status = "legacy"
+            elif (
+                worker.manifest_valid_until is not None
+                and worker.manifest_valid_until <= observed_at
+            ):
+                manifest_status = "expired"
+            else:
+                manifest_status = "current"
+            capabilities = sorted(worker.capabilities) if manifest_status != "expired" else []
             inventory.append(
                 {
-                    "workerID": str(worker["id"]),
-                    "provider": str(worker["provider"]),
-                    "model": str(worker["model_id"]),
-                    "state": str(worker["state"]),
-                    "nodeState": str(worker["node_state"]),
-                    "resourceState": str(worker["resource_state"]),
-                    "capabilities": sorted(item for item in capabilities if isinstance(item, str)),
-                    "codeWriteAllowed": bool(worker["code_write_allowed"]),
-                    "privacyAllowed": bool(worker["privacy_allowed"]),
+                    "workerID": worker.id,
+                    "provider": worker.provider.value,
+                    "model": _bounded_string(str(redact_sensitive(worker.model.identifier)), 200),
+                    "state": worker.state.value,
+                    "nodeState": worker.node_state.value,
+                    "resourceState": worker.resource_state.value,
+                    "capabilities": capabilities,
+                    "codeWriteAllowed": worker.code_write_allowed,
+                    "privacyAllowed": worker.privacy_allowed,
+                    "manifestStatus": manifest_status,
+                    "manifestSchemaVersion": worker.manifest_schema_version,
+                    "capabilityCatalogVersion": worker.capability_catalog_version,
+                    "manifestValidUntil": (
+                        worker.manifest_valid_until.isoformat().replace("+00:00", "Z")
+                        if worker.manifest_valid_until is not None
+                        else None
+                    ),
+                    "health": worker.health.value,
+                    "healthFreshness": worker.health_freshness.value,
+                    "quotaState": worker.quota_state.value,
+                    "quotaFreshness": worker.quota_freshness.value,
+                    "subscriptionState": worker.subscription_state.value,
+                    "workerLoad": worker.worker_load,
+                    "runningTasks": worker.running_tasks,
+                    "maxConcurrency": worker.max_concurrency,
+                    "locality": worker.locality.value,
+                    "privacy": worker.privacy.value,
+                    "costMode": worker.cost_mode.value,
                 }
             )
         return inventory
@@ -925,8 +952,10 @@ class ProductionAutonomyDriver:
                 "least one listed Worker; when no special capability is required, use an empty "
                 "requiredCapabilities array instead of inventing a capability. Do not target the "
                 "same Worker with multiple actions in one plan, and do not return more actions "
-                "than there are distinct eligible idle Workers; when only one Worker is eligible, "
-                "return exactly one action and defer follow-ups to later iterations. Each action "
+                "than there are distinct eligible Workers with remaining capacity. Treat an "
+                "expired manifest as unavailable and preserve unknown health or quota as UNKNOWN, "
+                "never as healthy or unlimited; when only one Worker is eligible, return exactly "
+                "one action and defer follow-ups to later iterations. Each action "
                 "description must request a concise result of at most 800 words. priority MUST be "
                 "a JSON integer from 0 through 100; panelSize MUST be a JSON integer from 1 "
                 "through 8; privacySensitive and codeWriteRequired MUST be JSON booleans; "

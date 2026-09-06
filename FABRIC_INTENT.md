@@ -60,6 +60,7 @@ The product principles are:
 **Human-usable. Agent-operable. Machine-readable. Auditable. Portable.**
 
 Zero-touch means routine operation after a legitimate trust root has been established. It never
-means bypassing OS controls or creating an unrestricted remote administrator channel. V0.1 provides
-a bootstrap and protocol **FOUNDATION**; zero-touch deployment is not complete until demonstrated on
-fresh macOS, Windows, and Linux environments with real enrollment, recovery, and security evidence.
+means bypassing OS controls or creating an unrestricted remote administrator channel. The current
+development tree provides material bootstrap, capability, execution, and interaction foundations;
+zero-touch deployment is not complete until demonstrated on fresh macOS, Windows, and Linux
+environments with real enrollment, recovery, and security evidence.

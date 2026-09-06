@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from collections.abc import Iterable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .adapters.base import (
+    AuthorizationReference,
     DurableWorkerAdapter,
     NegotiatingWorkerAdapter,
     UnsafeWorkerRequest,
@@ -46,6 +48,15 @@ from .domain import (
     WorkerState,
     utc_now,
 )
+from .fabric.capabilities import CapabilityClaim
+from .fabric.execution import SpawnPolicy
+from .fabric.execution_plane import (
+    ExecutionPlaneRecovery,
+    ExecutionPlaneRepository,
+    execution_plane_recovery_applicable,
+    requirements_digest,
+)
+from .fabric.fusion import FusionPolicy
 from .resource_usage import (
     PreDispatchQuotaGuard,
     QuotaGuardCandidate,
@@ -109,6 +120,7 @@ class SupervisorRuntime:
         runtime_id: str | None = None,
         dispatch_lease_ttl_seconds: float = 6.0,
         dispatch_wait_timeout_seconds: float = 60.0,
+        execution_plane_recovery: ExecutionPlaneRecovery | None = None,
     ) -> None:
         self.store = store
         self.scheduler = scheduler
@@ -132,6 +144,8 @@ class SupervisorRuntime:
         resource_repository = ResourceUsageRepository(store)
         self.resource_usage = resource_usage or ResourceUsageService(resource_repository)
         self.quota_guard = quota_guard or PreDispatchQuotaGuard(resource_repository)
+        self.execution_plane_recovery = execution_plane_recovery
+        self.execution_plane = ExecutionPlaneRepository(store)
         self._active: dict[str, asyncio.Task[None]] = {}
         self._dispatch_lock = asyncio.Lock()
         self._capacity_changed = asyncio.Event()
@@ -145,6 +159,7 @@ class SupervisorRuntime:
         # reconciliation claim takes a new lease generation without creating another attempt.
         await self._recover_durable_provider_jobs(task_ids=task_ids)
         result = await asyncio.to_thread(self.store.recover_interrupted, task_ids)
+        await self._record_prelaunch_interrupted_invocations(task_ids=task_ids)
         interrupted_runs = [
             run
             for run in await asyncio.to_thread(self.store.list_worker_runs)
@@ -208,6 +223,40 @@ class SupervisorRuntime:
                     )
         await self.audit_pending_terminal_tasks(task_ids=task_ids)
         return result
+
+    async def _record_prelaunch_interrupted_invocations(self, *, task_ids: set[str] | None) -> None:
+        """Close only invocations whose durable provider intent proves no launch occurred."""
+
+        from .fabric.provider_execution import InvocationStage, ProviderInvocationRepository
+
+        repository = ProviderInvocationRepository(self.store)
+        runs = await asyncio.to_thread(self.store.list_worker_runs)
+        for run in runs:
+            if run["state"] != RunState.INTERRUPTED.value or (
+                task_ids is not None and run["task_id"] not in task_ids
+            ):
+                continue
+            try:
+                job = await asyncio.to_thread(self.store.get_provider_job, run["id"])
+            except KeyError:
+                job = None
+            if job is not None and job["launch_state"] != "prepared":
+                continue
+            invocation_id = f"provider-invocation:{run['id']}:1"
+            try:
+                current = await asyncio.to_thread(repository.get, invocation_id)
+            except KeyError:
+                continue
+            if current.terminal:
+                continue
+            await asyncio.to_thread(
+                repository.observe,
+                invocation_id,
+                InvocationStage.REJECTED_BEFORE_PROCESS,
+                event_key="recoveryBeforeLaunch",
+                source="recovery",
+                detail_code="supervisorRestartBeforeLaunch",
+            )
 
     async def _repair_finalized_provider_attempts(self, *, task_ids: set[str] | None) -> None:
         terminal_run_states = {
@@ -739,12 +788,9 @@ class SupervisorRuntime:
             job: dict[str, Any], handle: WorkerJobHandle, adapter: DurableWorkerAdapter
         ) -> WorkerResult | BaseException:
             async def event_sink(event: WorkerEvent) -> None:
-                await asyncio.to_thread(
-                    self.store.record_adapter_event,
+                await self._record_adapter_event_and_provider_evidence(
                     run_id=job["run_id"],
-                    kind=event.kind,
-                    payload=dict(event.payload),
-                    lease_owner_id=self.runtime_id,
+                    event=event,
                     lease_generation=lease_generation,
                 )
 
@@ -889,6 +935,32 @@ class SupervisorRuntime:
         requirements: TaskRequirements,
         run_id: str,
     ) -> WorkerRequest:
+        execution_spec = json.loads(task.get("execution_spec_json") or "{}")
+        if not isinstance(execution_spec, dict):
+            raise RuntimeError("canonical task execution spec is not a JSON object")
+        authorization_id = self._authorization_envelope_id(execution_spec)
+        authorization_reference: dict[str, Any] | None = None
+        typed_authorization: AuthorizationReference | None = None
+        if authorization_id is not None:
+            from .fabric.authority import AuthorizationRepository
+
+            authorization = AuthorizationRepository(self.store).get(authorization_id)
+            authorization_reference = {
+                "authorizationID": authorization["authorizationID"],
+                "schemaVersion": authorization["schemaVersion"],
+                "version": authorization["version"],
+                "definitionSHA256": authorization["definitionSHA256"],
+                "platformApprovalState": authorization["platformApprovalState"],
+                "dataRefs": authorization["dataRefs"],
+            }
+            typed_authorization = AuthorizationReference(
+                authorization_id=authorization["authorizationID"],
+                schema_version=authorization["schemaVersion"],
+                version=authorization["version"],
+                definition_sha256=authorization["definitionSHA256"],
+                platform_approval_state=authorization["platformApprovalState"],
+                data_packet_ids=tuple(authorization["dataRefs"]),
+            )
         return WorkerRequest(
             run_id=run_id,
             task_id=task["id"],
@@ -896,12 +968,28 @@ class SupervisorRuntime:
             working_directory=Path(project["root_path"]),
             timeout_seconds=self.worker_timeout_seconds,
             code_write_required=requirements.code_write_required,
+            authorization=typed_authorization,
             metadata={
                 "labels": [label.value for label in requirements.labels],
                 "requested_capabilities": sorted(requirements.required_capabilities),
+                "preferred_capabilities": sorted(requirements.preferred_capabilities),
+                "capability_constraints": [
+                    claim.to_protocol() for claim in requirements.required_capability_parameters
+                ],
+                "executionSpec": execution_spec,
+                "authorizationEnvelope": authorization_reference,
                 "timeout_seconds": self.worker_timeout_seconds,
             },
         )
+
+    @staticmethod
+    def _authorization_envelope_id(execution_spec: Mapping[str, Any]) -> str | None:
+        value = execution_spec.get("authorizationEnvelopeID")
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value or len(value) > 160:
+            raise RuntimeError("authorizationEnvelopeID must be a bounded semantic identity")
+        return value
 
     def _provider_job_handle(self, job: dict[str, Any]) -> WorkerJobHandle:
         metadata = json.loads(job["adapter_metadata_json"] or "{}")
@@ -951,6 +1039,7 @@ class SupervisorRuntime:
         priority: int = 50,
         task_id: str | None = None,
         reference: str | None = None,
+        execution_spec: dict[str, Any] | None = None,
     ) -> str:
         task_id = task_id or f"tsk-{uuid.uuid4()}"
         if reference is None:
@@ -964,6 +1053,7 @@ class SupervisorRuntime:
             state=TaskState.DRAFT,
             topology=topology,
             requirements=requirements,
+            execution_spec=dict(execution_spec or {}),
             priority=priority,
         )
         await asyncio.to_thread(self.store.create_task, record, reference)
@@ -996,6 +1086,7 @@ class SupervisorRuntime:
         launched: list[str] = []
         blocked: list[str] = []
         deferred: list[str] = []
+        await self._recover_due_execution_capacity(task_ids=task_ids)
         async with self._dispatch_lock:
             tasks = sorted(
                 await asyncio.to_thread(self.store.list_tasks),
@@ -1060,6 +1151,15 @@ class SupervisorRuntime:
                 requirements = self._requirements(task)
                 topology = ExecutionTopology(task["topology"])
                 snapshots = await asyncio.to_thread(self.store.worker_snapshots)
+                adapter_absent_rejections = tuple(
+                    Rejection(
+                        worker_id=worker.id,
+                        reason_code="ADAPTER_NOT_BOUND",
+                        detail="Worker has no process-local verified adapter binding",
+                    )
+                    for worker in snapshots
+                    if not self.adapters.contains(worker.id)
+                )
                 candidates = [worker for worker in snapshots if self.adapters.contains(worker.id)]
                 if topology in {
                     ExecutionTopology.FALLBACK,
@@ -1093,7 +1193,11 @@ class SupervisorRuntime:
                     workers=candidates,
                     resource_evidence=resource_evidence,
                 )
-                combined_rejections = (*decision.rejected, *quota_rejections)
+                combined_rejections = (
+                    *decision.rejected,
+                    *quota_rejections,
+                    *adapter_absent_rejections,
+                )
                 decision = replace(
                     decision,
                     rejected=combined_rejections,
@@ -1116,7 +1220,91 @@ class SupervisorRuntime:
                     decision=decision,
                 )
                 if not decision.selected_worker_ids:
-                    if self._transient_capacity_possible(
+                    rejection_codes = tuple(
+                        dict.fromkeys(item.reason_code for item in combined_rejections)
+                    )
+                    if (
+                        self.execution_plane_recovery is not None
+                        and execution_plane_recovery_applicable(rejection_codes)
+                    ):
+                        await asyncio.to_thread(
+                            self.execution_plane.wait_for_capacity,
+                            task_id=task_id,
+                            requirements_sha256=requirements_digest(requirements),
+                            reason_code=(
+                                rejection_codes[0] if rejection_codes else "NO_EXECUTION_CAPACITY"
+                            ),
+                        )
+                        recovered = await self._attempt_execution_plane_recovery(
+                            task_id,
+                            requirements=requirements,
+                            rejection_codes=rejection_codes,
+                            force=True,
+                        )
+                        if recovered:
+                            snapshots = await asyncio.to_thread(self.store.worker_snapshots)
+                            adapter_absent_rejections = tuple(
+                                Rejection(
+                                    worker_id=worker.id,
+                                    reason_code="ADAPTER_NOT_BOUND",
+                                    detail=("Worker has no process-local verified adapter binding"),
+                                )
+                                for worker in snapshots
+                                if not self.adapters.contains(worker.id)
+                            )
+                            candidates = [
+                                worker for worker in snapshots if self.adapters.contains(worker.id)
+                            ]
+                            (
+                                candidates,
+                                quota_rejections,
+                                quota_explanation,
+                                resource_evidence,
+                            ) = await asyncio.to_thread(
+                                self._apply_quota_guard,
+                                requirements,
+                                candidates,
+                            )
+                            decision = self.scheduler.schedule(
+                                task_id=task_id,
+                                requirements=requirements,
+                                topology=topology,
+                                workers=candidates,
+                                resource_evidence=resource_evidence,
+                            )
+                            combined_rejections = (
+                                *decision.rejected,
+                                *quota_rejections,
+                                *adapter_absent_rejections,
+                            )
+                            decision = replace(
+                                decision,
+                                rejected=combined_rejections,
+                                explanation={
+                                    **decision.explanation,
+                                    "rejected": [
+                                        {
+                                            "workerID": item.worker_id,
+                                            "reasonCode": item.reason_code,
+                                            "detail": item.detail,
+                                        }
+                                        for item in combined_rejections
+                                    ],
+                                    "quotaGuard": quota_explanation,
+                                    "executionPlaneRecovery": {
+                                        "attempted": True,
+                                        "recovered": True,
+                                    },
+                                },
+                            )
+                            await asyncio.to_thread(
+                                self.store.persist_routing_decision,
+                                task_id=task_id,
+                                decision=decision,
+                            )
+                    if decision.selected_worker_ids:
+                        pass
+                    elif self._transient_capacity_possible(
                         requirements=requirements,
                         topology=topology,
                         candidates=candidates,
@@ -1130,15 +1318,16 @@ class SupervisorRuntime:
                         )
                         (blocked if wait_exhausted else deferred).append(task_id)
                         continue
-                    await asyncio.to_thread(
-                        self.store.transition_task,
-                        task_id,
-                        TaskState.BLOCKED,
-                        summary="No eligible worker",
-                        payload={"rejected": decision.explanation["rejected"]},
-                    )
-                    blocked.append(task_id)
-                    continue
+                    elif not decision.selected_worker_ids:
+                        await asyncio.to_thread(
+                            self.store.transition_task,
+                            task_id,
+                            TaskState.BLOCKED,
+                            summary="No eligible worker",
+                            payload={"rejected": decision.explanation["rejected"]},
+                        )
+                        blocked.append(task_id)
+                        continue
                 contract_observation_failed = False
                 for worker_id in decision.selected_worker_ids:
                     adapter = self.adapters.get(worker_id)
@@ -1163,6 +1352,10 @@ class SupervisorRuntime:
                         break
                 if contract_observation_failed:
                     continue
+                snapshots_by_id = {snapshot.id: snapshot for snapshot in snapshots}
+                execution_spec = json.loads(task.get("execution_spec_json") or "{}")
+                if not isinstance(execution_spec, dict):
+                    raise RuntimeError("canonical task execution spec is not a JSON object")
                 claim = await asyncio.to_thread(
                     self.store.claim_task_dispatch,
                     task_id,
@@ -1172,6 +1365,17 @@ class SupervisorRuntime:
                     lease_owner_id=self.runtime_id,
                     lease_ttl_seconds=self.dispatch_lease_ttl_seconds,
                     max_attempts=self.max_attempts,
+                    expected_manifest_digests={
+                        worker_id: snapshots_by_id[worker_id].manifest_digest
+                        for worker_id in decision.selected_worker_ids
+                    },
+                    expected_execution_observation_ids={
+                        worker_id: snapshots_by_id[worker_id].execution_observation_id
+                        for worker_id in decision.selected_worker_ids
+                    },
+                    expected_authorization_envelope_id=self._authorization_envelope_id(
+                        execution_spec
+                    ),
                 )
                 if claim is None:
                     # A peer may have claimed this Task, or a Worker reservation may have changed.
@@ -1200,6 +1404,17 @@ class SupervisorRuntime:
                         lease_owner_id=self.runtime_id,
                         lease_generation=int(claim["leaseGeneration"]),
                     )
+                    from .fabric.provider_execution import ProviderInvocationRepository
+
+                    await asyncio.to_thread(
+                        ProviderInvocationRepository(self.store).create,
+                        run_id=run_id,
+                        provider=snapshots_by_id[worker_id].provider.value,
+                        requested_model=snapshots_by_id[worker_id].model.identifier,
+                        envelope_id=self._authorization_envelope_id(execution_spec),
+                        idempotency_key=run_id,
+                        invocation_id=f"provider-invocation:{run_id}:1",
+                    )
                 active = asyncio.create_task(
                     self._execute_task(
                         task,
@@ -1217,6 +1432,65 @@ class SupervisorRuntime:
                 )
                 launched.append(task_id)
         return DispatchSummary(tuple(launched), tuple(blocked), tuple(deferred))
+
+    async def _recover_due_execution_capacity(self, *, task_ids: set[str] | None) -> None:
+        if self.execution_plane_recovery is None:
+            return
+        waits = await asyncio.to_thread(self.execution_plane.due_capacity_waits)
+        for wait in waits:
+            task_id = str(wait["task_id"])
+            if task_ids is not None and task_id not in task_ids:
+                continue
+            try:
+                task = await asyncio.to_thread(self.store.get_task, task_id)
+            except KeyError:
+                continue
+            if task["state"] != TaskState.BLOCKED.value:
+                continue
+            requirements = self._requirements(task)
+            if requirements_digest(requirements) != wait["requirements_sha256"]:
+                continue
+            await self._attempt_execution_plane_recovery(
+                task_id,
+                requirements=requirements,
+                rejection_codes=(str(wait["reason_code"]),),
+                force=False,
+            )
+
+    async def _attempt_execution_plane_recovery(
+        self,
+        task_id: str,
+        *,
+        requirements: TaskRequirements,
+        rejection_codes: tuple[str, ...],
+        force: bool,
+    ) -> bool:
+        if self.execution_plane_recovery is None:
+            return False
+        claimed = await asyncio.to_thread(
+            self.execution_plane.claim_recovery_attempt,
+            task_id,
+            owner_id=self.runtime_id,
+            lease_seconds=min(300.0, max(5.0, self.worker_timeout_seconds)),
+            force=force,
+        )
+        if not claimed:
+            return False
+        try:
+            recovered = await self.execution_plane_recovery.recover_capacity(
+                task_id=task_id,
+                requirements=requirements,
+                rejection_codes=rejection_codes,
+            )
+        except Exception:
+            recovered = False
+        await asyncio.to_thread(
+            self.execution_plane.record_recovery_attempt,
+            task_id,
+            succeeded=recovered,
+            owner_id=self.runtime_id,
+        )
+        return recovered
 
     async def wait_for_active(self, *, task_ids: set[str] | None = None) -> None:
         while True:
@@ -1318,7 +1592,9 @@ class SupervisorRuntime:
         if not any(worker.state in busy_states for worker in candidates):
             return False
         capacity_projection = [
-            replace(worker, state=WorkerState.IDLE) if worker.state in busy_states else worker
+            replace(worker, state=WorkerState.IDLE, running_tasks=0)
+            if worker.state in busy_states
+            else worker
             for worker in candidates
         ]
         probe = self.scheduler.schedule(
@@ -1416,9 +1692,121 @@ class SupervisorRuntime:
             expected_task_definition_revision=expected_task_definition_revision,
             expected_source_attempt=expected_source_attempt,
         )
+        if state is TaskState.SUCCEEDED:
+            from .fabric.persistence import finalize_verified_interaction_learning
+
+            await asyncio.to_thread(finalize_verified_interaction_learning, self.store, task_id)
         if state in {TaskState.SUCCEEDED, TaskState.FAILED}:
             await self.audit_task_terminal(task_id)
         return state
+
+    async def fuse_task_results(
+        self,
+        task_id: str,
+        claims_by_run: Mapping[str, Mapping[str, Any]],
+        *,
+        evidence_by_run: Mapping[str, Mapping[str, Any]] | None = None,
+        policy: FusionPolicy | None = None,
+    ) -> dict[str, Any]:
+        """Normalize and fuse every canonical result in the current Task attempt."""
+
+        from .fabric.persistence import FusionRepository
+
+        return await asyncio.to_thread(
+            FusionRepository(self.store).fuse_attempt,
+            task_id,
+            claims_by_run,
+            evidence_by_run=evidence_by_run,
+            policy=policy,
+        )
+
+    async def normalize_analysis_result(self, run_id: str) -> dict[str, Any]:
+        """Bind typed claims to one immutable canonical Worker result."""
+
+        from .fabric.provider_execution import AnalysisResultRepository
+
+        return await asyncio.to_thread(AnalysisResultRepository(self.store).normalize, run_id)
+
+    async def fuse_normalized_task_results(
+        self,
+        task_id: str,
+        *,
+        policy: FusionPolicy | None = None,
+    ) -> dict[str, Any]:
+        """Fuse only Supervisor-normalized current-attempt analysis contributions."""
+
+        from .fabric.provider_execution import AnalysisResultRepository
+
+        contributions = await asyncio.to_thread(
+            AnalysisResultRepository(self.store).normalized_attempt,
+            task_id,
+        )
+        return await self.fuse_task_results(
+            task_id,
+            {str(contribution["runID"]): contribution["claims"] for contribution in contributions},
+            evidence_by_run={
+                str(contribution["runID"]): contribution["evidence"]
+                for contribution in contributions
+            },
+            policy=policy,
+        )
+
+    async def create_hypotheses_from_fusion(self, fusion_id: str) -> dict[str, Any]:
+        from .fabric.provider_execution import HypothesisRepository
+
+        return await asyncio.to_thread(HypothesisRepository(self.store).from_fusion, fusion_id)
+
+    async def apply_fused_verification(
+        self,
+        fusion_id: str,
+        result: DefinitionOfDoneResult,
+        *,
+        verifier: str = "deterministic-verifier",
+    ) -> TaskState:
+        """Apply independent verification through an immutable fusion provenance handoff."""
+
+        from .fabric.persistence import FusionRepository
+
+        repository = FusionRepository(self.store)
+        fusion = await asyncio.to_thread(repository.get, fusion_id)
+        task_id = str(fusion["taskID"])
+        state = await asyncio.to_thread(
+            repository.apply_independent_verification,
+            fusion_id,
+            result,
+            verifier=verifier,
+            max_attempts=self.max_attempts,
+        )
+        if state is TaskState.SUCCEEDED:
+            from .fabric.persistence import finalize_verified_interaction_learning
+
+            await asyncio.to_thread(finalize_verified_interaction_learning, self.store, task_id)
+        if state in {TaskState.SUCCEEDED, TaskState.FAILED}:
+            await self.audit_task_terminal(task_id)
+        return state
+
+    async def admit_child_work_proposals(
+        self,
+        run_id: str,
+        envelopes: Iterable[Mapping[str, Any]],
+        *,
+        policy: SpawnPolicy | None = None,
+    ) -> tuple[dict[str, Any], ...]:
+        """Submit typed Worker proposals to Supervisor-owned canonical spawn governance."""
+
+        from .fabric.persistence import SpawnRepository
+
+        repository = SpawnRepository(self.store, policy)
+        decisions: list[dict[str, Any]] = []
+        for envelope in envelopes:
+            decisions.append(
+                await asyncio.to_thread(
+                    repository.admit_from_worker_result,
+                    run_id,
+                    envelope,
+                )
+            )
+        return tuple(decisions)
 
     async def cancel_task(self, task_id: str) -> bool:
         runs = await asyncio.to_thread(self.store.list_worker_runs, task_id)
@@ -1894,6 +2282,46 @@ class SupervisorRuntime:
                 )
                 await self.audit_task_terminal(task["id"], task=terminal)
 
+    async def _record_adapter_event_and_provider_evidence(
+        self,
+        *,
+        run_id: str,
+        event: WorkerEvent,
+        lease_generation: int,
+    ) -> None:
+        """Persist a fenced adapter event, then fold only typed provider-boundary evidence."""
+
+        await asyncio.to_thread(
+            self.store.record_adapter_event,
+            run_id=run_id,
+            kind=event.kind,
+            payload=dict(event.payload),
+            lease_owner_id=self.runtime_id,
+            lease_generation=lease_generation,
+        )
+        from .fabric.provider_execution import InvocationStage, ProviderInvocationRepository
+
+        stage = {
+            "processStarted": InvocationStage.PROCESS_STARTED,
+            "providerDataDisclosed": InvocationStage.DATA_DISCLOSED,
+            "providerInferenceStarted": InvocationStage.INFERENCE_STARTED,
+            "modelStarted": InvocationStage.INFERENCE_STARTED,
+        }.get(event.kind)
+        if stage is None:
+            return
+        model = event.payload.get("model")
+        if not isinstance(model, str):
+            model = None
+        await asyncio.to_thread(
+            ProviderInvocationRepository(self.store).observe,
+            f"provider-invocation:{run_id}:1",
+            stage,
+            event_key=event.kind,
+            source="adapter",
+            model=model,
+            observed_at=event.timestamp,
+        )
+
     async def _execute_worker(
         self,
         *,
@@ -1930,32 +2358,29 @@ class SupervisorRuntime:
             )
 
         async def event_sink(event: WorkerEvent) -> None:
-            await asyncio.to_thread(
-                self.store.record_adapter_event,
+            await self._record_adapter_event_and_provider_evidence(
                 run_id=run_id,
-                kind=event.kind,
-                payload=dict(event.payload),
-                lease_owner_id=self.runtime_id,
+                event=event,
                 lease_generation=lease_generation,
             )
 
         adapter = self.adapters.get(worker_id)
         provider_job = await asyncio.to_thread(self.store.get_provider_job, run_id)
-        request = WorkerRequest(
-            run_id=run_id,
-            task_id=task["id"],
-            prompt=task["description"],
-            working_directory=Path(project["root_path"]),
-            timeout_seconds=self.worker_timeout_seconds,
-            code_write_required=requirements.code_write_required,
-            metadata={
-                "labels": [label.value for label in requirements.labels],
-                "requested_capabilities": sorted(requirements.required_capabilities),
-                "timeout_seconds": self.worker_timeout_seconds,
-            },
-        )
+        request = self._worker_request(task, project, requirements, run_id)
         invocation_started_at = utc_now()
         try:
+            from .fabric.provider_execution import (
+                InvocationStage,
+                ProviderInvocationRepository,
+            )
+
+            await asyncio.to_thread(
+                ProviderInvocationRepository(self.store).observe,
+                f"provider-invocation:{run_id}:1",
+                InvocationStage.DISPATCHED,
+                event_key="launching",
+                source="runtime",
+            )
             await asyncio.to_thread(
                 self.store.mark_provider_job_launching,
                 run_id,
@@ -1985,6 +2410,13 @@ class SupervisorRuntime:
                     lease_owner_id=self.runtime_id,
                     lease_generation=lease_generation,
                 )
+                await asyncio.to_thread(
+                    ProviderInvocationRepository(self.store).observe,
+                    f"provider-invocation:{run_id}:1",
+                    InvocationStage.ACCEPTED,
+                    event_key="providerHandleBound",
+                    source="adapter",
+                )
                 result = await adapter.resume_job(request, handle, event_sink=event_sink)
             else:
                 result = await adapter.execute(request, event_sink=event_sink)
@@ -1996,6 +2428,14 @@ class SupervisorRuntime:
                     error=error,
                 )
                 if rejected is not None:
+                    await asyncio.to_thread(
+                        ProviderInvocationRepository(self.store).observe,
+                        f"provider-invocation:{run_id}:1",
+                        InvocationStage.REJECTED_BEFORE_PROCESS,
+                        event_key="rejectedBeforeProcess",
+                        source="adapter",
+                        detail_code="rejectedBeforeProcess",
+                    )
                     return await self._persist_worker_result(
                         task=task,
                         worker_id=worker_id,
@@ -2006,6 +2446,14 @@ class SupervisorRuntime:
                         lease_generation=lease_generation,
                         result=rejected,
                     )
+                await asyncio.to_thread(
+                    ProviderInvocationRepository(self.store).observe,
+                    f"provider-invocation:{run_id}:1",
+                    InvocationStage.OUTCOME_UNKNOWN,
+                    event_key="launchOutcomeUnknown",
+                    source="runtime",
+                    detail_code="launchOutcomeUnknown",
+                )
                 return await self._hold_ambiguous_provider_job(
                     task=task,
                     worker_id=worker_id,
@@ -2018,6 +2466,14 @@ class SupervisorRuntime:
                     invocation_started_at=invocation_started_at,
                 )
             classification = self._exception_classification(error)
+            await asyncio.to_thread(
+                ProviderInvocationRepository(self.store).observe,
+                f"provider-invocation:{run_id}:1",
+                InvocationStage.FAILED,
+                event_key="adapterFailure",
+                source="runtime",
+                detail_code="failureAfterStartUnknown",
+            )
             await asyncio.to_thread(
                 self.store.transition_worker_run,
                 run_id,
@@ -2142,6 +2598,7 @@ class SupervisorRuntime:
             lease_owner_id=self.runtime_id,
             lease_generation=lease_generation,
         )
+        await self._record_terminal_provider_invocation(run_id, result)
         await self._record_usage(task["id"], run_id, worker_id, result)
         evidence_path = await asyncio.to_thread(self._write_run_evidence, result)
         failure_class = self._result_failure_class(result)
@@ -2193,6 +2650,86 @@ class SupervisorRuntime:
             lease_generation=lease_generation,
         )
         return result
+
+    async def _record_terminal_provider_invocation(self, run_id: str, result: WorkerResult) -> None:
+        """Append provider evidence after the immutable canonical result exists.
+
+        All normal execution and durable recovery/collection paths converge through
+        ``_persist_worker_result``.  Keeping this lifecycle fold here prevents a recovered result
+        from remaining permanently projected as ``outcomeUnknown`` after the provider has supplied
+        authoritative terminal evidence.
+        """
+
+        from .fabric.provider_execution import InvocationStage, ProviderInvocationRepository
+
+        repository = ProviderInvocationRepository(self.store)
+        invocation_id = f"provider-invocation:{run_id}:1"
+        current = await asyncio.to_thread(repository.get, invocation_id)
+        if current.terminal:
+            return
+        model_identity_conflict = bool(
+            result.model
+            and current.model_used.value == "yes"
+            and current.model is not None
+            and current.model != result.model
+        )
+        if result.model and current.model_used.value != "yes":
+            current = await asyncio.to_thread(
+                repository.observe,
+                invocation_id,
+                InvocationStage.INFERENCE_STARTED,
+                event_key="providerReportedModel",
+                source="adapter",
+                model=result.model,
+            )
+        with self.store.connect() as connection:
+            observed_stages = {
+                str(row["stage"])
+                for row in connection.execute(
+                    "SELECT stage FROM provider_invocation_events_v2 WHERE invocation_id=?",
+                    (invocation_id,),
+                ).fetchall()
+            }
+        process_or_inference_started = bool(
+            observed_stages
+            & {
+                "processStarted",
+                "disclosureRequested",
+                "dataDisclosed",
+                "modelUsed",
+                "inferenceStarted",
+                "inferenceCompleted",
+                "running",
+            }
+        )
+        terminal_stage = {
+            RunState.COMPLETED: (
+                InvocationStage.INFERENCE_COMPLETED
+                if result.model and result.succeeded
+                else InvocationStage.COMPLETED
+            ),
+            RunState.CANCELLED: InvocationStage.CANCELLED,
+        }.get(
+            result.state,
+            (
+                InvocationStage.FAILED_AFTER_START
+                if process_or_inference_started
+                else InvocationStage.FAILED
+            ),
+        )
+        await asyncio.to_thread(
+            repository.observe,
+            invocation_id,
+            terminal_stage,
+            event_key="terminalResult",
+            source="runtime",
+            model=(result.model if terminal_stage is InvocationStage.INFERENCE_COMPLETED else None),
+            detail_code=(
+                "modelIdentityConflict"
+                if model_identity_conflict
+                else (None if result.succeeded else "terminalResultFailure")
+            ),
+        )
 
     async def _hold_ambiguous_provider_job(
         self,
@@ -2544,6 +3081,20 @@ class SupervisorRuntime:
 
     @staticmethod
     def _requirements(row: dict[str, Any]) -> TaskRequirements:
+        contract = json.loads(row.get("capability_constraints_json") or "{}")
+        if not isinstance(contract, dict):
+            raise RuntimeError("canonical capability request contract is not a JSON object")
+        raw_claims = contract.get("required", [])
+        if not isinstance(raw_claims, list):
+            raise RuntimeError("canonical capability parameter requirements are invalid")
+        claims: list[CapabilityClaim] = []
+        for item in raw_claims:
+            if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+                raise RuntimeError("canonical capability parameter claim is invalid")
+            parameters = item.get("parameters", {})
+            if not isinstance(parameters, dict):
+                raise RuntimeError("canonical capability parameter values are invalid")
+            claims.append(CapabilityClaim(item["name"], parameters))
         return TaskRequirements(
             labels=frozenset(TaskLabel(value) for value in json.loads(row["labels_json"])),
             required_capabilities=frozenset(json.loads(row["required_capabilities_json"])),
@@ -2554,4 +3105,14 @@ class SupervisorRuntime:
             code_write_required=bool(row["code_write_required"]),
             panel_size=row["panel_size"],
             preferred_workers=tuple(json.loads(row["preferred_workers_json"])),
+            preferred_capabilities=frozenset(
+                json.loads(row.get("preferred_capabilities_json") or "[]")
+            ),
+            required_capability_parameters=tuple(claims),
+            local_only=bool(row.get("local_only", 0)),
+            minimum_quality_score=row.get("minimum_quality"),
+            max_incremental_cost_usd=row.get("max_incremental_cost_usd"),
+            explicit_worker_override=row.get("explicit_worker_id"),
+            required_manifest_schema_version=contract.get("requiredManifestSchemaVersion"),
+            required_capability_catalog_version=contract.get("requiredCatalogVersion"),
         )

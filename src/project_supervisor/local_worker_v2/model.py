@@ -53,12 +53,16 @@ def canonical_request_document(
     run_id: str,
     task_id: str | None,
     job: Mapping[str, Any],
+    authorization: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    document = {
         "protocol_version": PROTOCOL_VERSION,
         "execution": {"run_id": run_id, "task_id": task_id},
         "job": dict(job),
     }
+    if authorization is not None:
+        document["authorization"] = dict(authorization)
+    return document
 
 
 def request_digest(
@@ -66,8 +70,14 @@ def request_digest(
     run_id: str,
     task_id: str | None,
     job: Mapping[str, Any],
+    authorization: Mapping[str, Any] | None = None,
 ) -> str:
-    document = canonical_request_document(run_id=run_id, task_id=task_id, job=job)
+    document = canonical_request_document(
+        run_id=run_id,
+        task_id=task_id,
+        job=job,
+        authorization=authorization,
+    )
     encoded = json.dumps(
         document,
         ensure_ascii=False,

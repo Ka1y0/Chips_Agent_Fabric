@@ -11,13 +11,40 @@ canonical SQLite/task/event/artifact state.
 ## Discover before acting
 
 1. Read `FABRIC_INTENT.md`, `CAPABILITIES.md`, `PROTOCOL.md`, and the relevant ADR/protocol.
-2. Run `python3 bootstrap/chips.py bootstrap --json` for credential-free local discovery.
+2. Run `chips-onboard --json` for a concise view, then
+   `python3 bootstrap/chips.py bootstrap --json` for credential-free local discovery.
 3. Treat every path/model/runtime as a candidate until a safe real contract gate verifies it.
 4. For existing initialized state, run `project-supervisor --json status`, `tasks`, and
    `logs --after SEQUENCE` against the operator-specified data directory.
 
 Do not assume an installed Worker is authenticated, online, eligible, reachable, or authorized.
 Bootstrap discovery does not test authentication, connectivity, listeners, or credentials.
+
+`project_supervisor.local_models` turns verified LM Studio, Ollama, llama.cpp, or explicitly
+configured loopback OpenAI-compatible observations into conservative recommendations. Observed
+capacity, recommendation, health, and freshness remain distinct; unknown context or parallel
+capacity stays unknown and unsafe runtime settings are never applied silently.
+
+## Explicit live model checks and Bridge encoding
+
+`chips-model-probe --runtime ollama --endpoint http://127.0.0.1:11434` is socket-free by default.
+Only add `--allow-network` after the operator permits a catalog request. Fixed synthetic inference
+also requires `--model EXACT_MODEL_ID --allow-inference`; this may load a model and consume compute.
+No credential access, settings mutation, or Worker registration occurs. A loopback server is not
+proof that inference stays local. Read `docs/EXECUTION_VERTICAL_SLICES.md` before using the command.
+
+`project_supervisor.bridge.zlib_codec` provides an opt-in bounded lossless wire codec for peers
+that negotiate it. Keep the existing Bridge authority policy and source fallback. Do not describe
+byte compression as reduced model tokens or a completed learned semantic communication system.
+
+## Inspect before recovery
+
+`chips-goal-inspect --database EXPLICIT_DATABASE --goal EXACT_GOAL_ID` returns a bounded,
+read-only `goal-inspection/v1` snapshot without initializing or migrating state. Goal controls,
+lease ownership and external execution quiescence are separate: the last remains unknown because
+this command does not contact providers. A readable snapshot is not a successful task, permission
+to retry, or proof that a worker stopped. Read `docs/GOAL_INSPECTION.md` for schema, limits and
+pseudonymous disclosure boundaries. Do not share reports automatically.
 
 ## Safe lifecycle
 

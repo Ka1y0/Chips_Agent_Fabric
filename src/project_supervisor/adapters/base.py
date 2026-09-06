@@ -237,6 +237,52 @@ class WorkerJobLaunchObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class AuthorizationReference:
+    """Non-secret immutable authority identity carried across a Worker boundary."""
+
+    authorization_id: str
+    schema_version: str
+    definition_sha256: str
+    platform_approval_state: str
+    version: int = 1
+    data_packet_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.authorization_id.strip() or len(self.authorization_id) > 160:
+            raise ValueError("authorization_id must be bounded and non-empty")
+        if self.schema_version != "authorization-envelope/v1":
+            raise ValueError("unsupported authorization reference schema")
+        if isinstance(self.version, bool) or self.version < 1:
+            raise ValueError("authorization reference version must be positive")
+        if len(self.definition_sha256) != 64 or any(
+            character not in "0123456789abcdef" for character in self.definition_sha256
+        ):
+            raise ValueError("authorization definition must be a lowercase SHA-256 digest")
+        if self.platform_approval_state not in {
+            "notRequired",
+            "approved",
+            "pending",
+            "rejected",
+            "unknown",
+        }:
+            raise ValueError("invalid platform approval state")
+        if len(self.data_packet_ids) > 256 or any(
+            not value or len(value) > 160 for value in self.data_packet_ids
+        ):
+            raise ValueError("authorization data packet identities are invalid")
+
+    def to_protocol(self) -> dict[str, Any]:
+        return {
+            "authorization_id": self.authorization_id,
+            "schema_version": self.schema_version,
+            "version": self.version,
+            "definition_sha256": self.definition_sha256,
+            "platform_approval_state": self.platform_approval_state,
+            "data_packet_ids": list(self.data_packet_ids),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class WorkerRequest:
     run_id: str
     prompt: str
@@ -246,6 +292,7 @@ class WorkerRequest:
     code_write_required: bool = False
     session_id: str | None = None
     model: str | None = None
+    authorization: AuthorizationReference | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:

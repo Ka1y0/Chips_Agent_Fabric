@@ -1,5 +1,10 @@
 # Universal bootstrap FOUNDATION
 
+After package installation, `chips-onboard --json` provides the shortest read-only first-run view.
+It projects the same canonical dry-run bootstrap plan into `minimal`, `localOnly`, `cloudOnly`,
+`hybridWorkstation`, or `clusterNode` guidance and separates non-mutating steps from approval-gated
+mutations. It does not maintain a second bootstrap state machine.
+
 `chips.py` is a portable, standard-library bootstrap entrypoint:
 
 ```sh

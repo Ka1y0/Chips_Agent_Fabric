@@ -11,12 +11,12 @@ APIs, and telemetry.
 experimental AI-to-AI communication plane; it never replaces canonical SQLite, events, or
 structured artifacts.
 
-The V0.2 beta preserves the real cross-device V0 baseline and advances Supervisor into a durable,
-recoverable autonomous orchestration kernel. It includes Local Worker Protocol V2 and registered
-native CLI paths for Codex, Claude Code, Grok, and Google AGY. Provider executables and existing
-operator-controlled authentication are still deployment prerequisites; deterministic tests do not
-consume live model quota. Automated trust-root enrollment, Privilege Broker execution, transport
-installation, and zero-touch deployment are not claimed complete.
+The current development tree preserves the V0.2 package baseline while adding V0.3 capability,
+execution, interaction, multi-node, onboarding, local-model, Hybrid Engine, cluster-governance, and
+Bridge foundations. Provider executables and operator-controlled authentication remain deployment
+prerequisites; deterministic tests do not consume live model quota. Automated trust-root enrollment,
+Privilege Broker execution, transport installation, and zero-touch deployment are not claimed
+complete.
 
 ## Start here
 
@@ -29,6 +29,7 @@ Python 3.12 or newer is required:
 ```sh
 python3.12 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
+.venv/bin/chips-onboard --json
 .venv/bin/chips bootstrap --json
 .venv/bin/python -m pytest -q
 ```
@@ -69,6 +70,7 @@ zero-touch deployments.
 ## Architecture and operations
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system, data flow, and trust boundaries
+- [`docs/PERSONAL_INTELLIGENCE_FABRIC.md`](docs/PERSONAL_INTELLIGENCE_FABRIC.md) — product direction
 - [`docs/WORKER_PROTOCOL.md`](docs/WORKER_PROTOCOL.md) — provider-neutral Worker semantics
 - [`docs/NODE_PROTOCOL.md`](docs/NODE_PROTOCOL.md) — node identity and transport semantics
 - [`docs/CAPABILITY_MODEL.md`](docs/CAPABILITY_MODEL.md) — least-privilege authority model

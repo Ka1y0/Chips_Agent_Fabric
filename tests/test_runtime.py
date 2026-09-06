@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from datetime import UTC, datetime
 
 import pytest
 
@@ -28,6 +29,8 @@ from project_supervisor.domain import (
     WorkerSnapshot,
     WorkerState,
 )
+from project_supervisor.fabric.capabilities import WorkerManifest
+from project_supervisor.fabric.persistence import CapabilityRegistryRepository
 from project_supervisor.runtime import AdapterRegistry, SupervisorRuntime
 from project_supervisor.scheduler import DeterministicScheduler
 from project_supervisor.store import StateStore
@@ -66,6 +69,27 @@ class GatedMockAdapter(CountingMockAdapter):
         event_sink: EventSink | None = None,
     ) -> WorkerResult:
         self.started.set()
+        await self.release.wait()
+        return await super().execute(request, event_sink=event_sink)
+
+
+class ConcurrentGatedMockAdapter(CountingMockAdapter):
+    def __init__(self, expected: int) -> None:
+        super().__init__()
+        self.expected = expected
+        self.started_count = 0
+        self.all_started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def execute(
+        self,
+        request: WorkerRequest,
+        *,
+        event_sink: EventSink | None = None,
+    ) -> WorkerResult:
+        self.started_count += 1
+        if self.started_count >= self.expected:
+            self.all_started.set()
         await self.release.wait()
         return await super().execute(request, event_sink=event_sink)
 
@@ -634,6 +658,181 @@ async def test_dispatch_prefers_higher_priority_when_capacity_is_bounded(tmp_pat
     assert summary.launched_task_ids == (high,)
     assert low in summary.deferred_task_ids
     await runtime.wait_for_active()
+
+
+async def test_versioned_worker_claims_declared_capacity_and_expiry_is_fenced(tmp_path) -> None:
+    store, registry, runtime = runtime_fixture(tmp_path)
+    adapter = ConcurrentGatedMockAdapter(expected=2)
+    register_worker(store, registry, "worker-versioned", adapter)
+    capability_registry = CapabilityRegistryRepository(store)
+    expired_manifest = WorkerManifest(
+        worker_id="worker-versioned",
+        node_id="node-1",
+        provider_id="mock",
+        adapter_kind="mock",
+        capabilities=("analysis", "review"),
+        max_concurrency=2,
+        manifest_revision=1,
+    )
+    capability_registry.register_manifest(
+        expired_manifest,
+        observed_at=datetime(1999, 1, 1, tzinfo=UTC),
+        valid_until=datetime(2000, 1, 1, tzinfo=UTC),
+        expected_head_generation=0,
+    )
+    requirements = TaskRequirements(
+        labels=frozenset({TaskLabel.RESEARCH}),
+        required_capabilities=frozenset({"analysis"}),
+    )
+    first = await runtime.submit_task(
+        project_id="project-1",
+        task_id="capacity-task-1",
+        title="Capacity one",
+        description="Use the first declared slot",
+        requirements=requirements,
+        priority=90,
+    )
+    expired_snapshot = store.worker_snapshots()[0]
+    assert expired_snapshot.manifest_valid_until == datetime(2000, 1, 1, tzinfo=UTC)
+    assert (
+        store.claim_task_dispatch(
+            first,
+            ["worker-versioned"],
+            expected_version=store.get_task(first)["version"],
+            expected_manifest_digests={"worker-versioned": expired_manifest.digest},
+        )
+        is None
+    )
+    assert store.list_worker_runs(first) == []
+
+    current_manifest = WorkerManifest(
+        worker_id="worker-versioned",
+        node_id="node-1",
+        provider_id="mock",
+        adapter_kind="mock",
+        capabilities=("analysis", "review"),
+        max_concurrency=2,
+        manifest_revision=2,
+    )
+    capability_registry.register_manifest(
+        current_manifest,
+        observed_at=datetime(2026, 1, 1, tzinfo=UTC),
+        valid_until=datetime(2100, 1, 1, tzinfo=UTC),
+        expected_head_generation=1,
+    )
+    second = await runtime.submit_task(
+        project_id="project-1",
+        task_id="capacity-task-2",
+        title="Capacity two",
+        description="Use the second declared slot",
+        requirements=requirements,
+        priority=80,
+    )
+    third = await runtime.submit_task(
+        project_id="project-1",
+        task_id="capacity-task-3",
+        title="Capacity three",
+        description="Wait until a declared slot is free",
+        requirements=requirements,
+        priority=70,
+    )
+
+    summary = await runtime.dispatch_ready(task_ids={first, second, third})
+    await asyncio.wait_for(adapter.all_started.wait(), timeout=1)
+
+    assert summary.launched_task_ids == (first, second)
+    assert summary.deferred_task_ids == (third,)
+    assert store.list_worker_runs(third) == []
+    snapshot = store.worker_snapshots()[0]
+    assert snapshot.state is WorkerState.RUNNING
+    assert snapshot.running_tasks == 2
+    assert snapshot.max_concurrency == 2
+    assert snapshot.manifest_valid_until == datetime(2100, 1, 1, tzinfo=UTC)
+    duplicate = await runtime.dispatch_ready(task_ids={first})
+    assert duplicate.launched_task_ids == ()
+    assert len(store.list_worker_runs(first)) == 1
+
+    adapter.release.set()
+    await runtime.wait_for_active(task_ids={first, second})
+    assert store.list_workers()[0]["state"] == WorkerState.IDLE.value
+
+    final = await runtime.dispatch_ready(task_ids={third})
+    assert final.launched_task_ids == (third,)
+    await runtime.wait_for_active(task_ids={third})
+    assert adapter.execute_calls == 3
+    assert {store.get_task(task_id)["state"] for task_id in (first, second, third)} == {
+        TaskState.REVIEWING.value
+    }
+
+
+async def test_versioned_worker_capacity_is_atomic_across_store_instances(tmp_path) -> None:
+    store, registry, runtime = runtime_fixture(tmp_path)
+    register_worker(store, registry, "worker-versioned", MockAdapter())
+    manifest = WorkerManifest(
+        worker_id="worker-versioned",
+        node_id="node-1",
+        provider_id="mock",
+        adapter_kind="mock",
+        capabilities=("analysis", "review"),
+        max_concurrency=2,
+    )
+    CapabilityRegistryRepository(store).register_manifest(
+        manifest,
+        valid_until=datetime(2100, 1, 1, tzinfo=UTC),
+    )
+    requirements = TaskRequirements(
+        labels=frozenset({TaskLabel.RESEARCH}),
+        required_capabilities=frozenset({"analysis"}),
+    )
+    task_ids = tuple(
+        [
+            await runtime.submit_task(
+                project_id="project-1",
+                task_id=f"atomic-capacity-{index}",
+                title=f"Atomic capacity {index}",
+                description="Compete for one durable versioned Worker",
+                requirements=requirements,
+            )
+            for index in range(3)
+        ]
+    )
+    peers = tuple(StateStore(store.path) for _ in task_ids)
+    barrier = threading.Barrier(len(task_ids))
+
+    def claim(peer: StateStore, task_id: str):
+        barrier.wait(timeout=2)
+        return peer.claim_task_dispatch(
+            task_id,
+            ["worker-versioned"],
+            expected_version=peer.get_task(task_id)["version"],
+            expected_manifest_digests={"worker-versioned": manifest.digest},
+        )
+
+    claims = await asyncio.gather(
+        *(
+            asyncio.to_thread(claim, peer, task_id)
+            for peer, task_id in zip(peers, task_ids, strict=True)
+        )
+    )
+
+    successful = [claim for claim in claims if claim is not None]
+    assert len(successful) == 2
+    assert len(store.list_worker_runs()) == 2
+    assert store.worker_snapshots()[0].running_tasks == 2
+    claimed_task = next(
+        task_id
+        for task_id in task_ids
+        if store.get_task(task_id)["state"] == TaskState.RUNNING.value
+    )
+    assert (
+        StateStore(store.path).claim_task_dispatch(
+            claimed_task,
+            ["worker-versioned"],
+            expected_version=store.get_task(claimed_task)["version"],
+            expected_manifest_digests={"worker-versioned": manifest.digest},
+        )
+        is None
+    )
 
 
 async def test_peer_recovery_preserves_live_unexpired_execution_lease(tmp_path) -> None:

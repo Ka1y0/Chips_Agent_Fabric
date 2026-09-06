@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import math
 import os
 import uuid
 from collections.abc import Awaitable, Callable
@@ -46,16 +47,21 @@ class AutonomousHostConfig:
     shutdown_grace_seconds: float = 10.0
 
     def __post_init__(self) -> None:
-        if self.max_concurrent_goals < 1:
-            raise ValueError("max_concurrent_goals must be positive")
+        if type(self.max_concurrent_goals) is not int or self.max_concurrent_goals < 1:
+            raise ValueError("max_concurrent_goals must be a positive integer")
         for name in (
             "poll_interval_seconds",
             "heartbeat_interval_seconds",
             "lease_ttl_seconds",
             "shutdown_grace_seconds",
         ):
-            if getattr(self, name) <= 0:
-                raise ValueError(f"{name} must be positive")
+            value = getattr(self, name)
+            try:
+                valid = type(value) in (int, float) and math.isfinite(value) and value > 0
+            except OverflowError:
+                valid = False
+            if not valid:
+                raise ValueError(f"{name} must be a finite positive number")
         if self.lease_ttl_seconds <= self.heartbeat_interval_seconds:
             raise ValueError("lease_ttl_seconds must exceed heartbeat_interval_seconds")
 
@@ -258,10 +264,11 @@ class AutonomousHostRepository:
         *,
         lease_ttl_seconds: float,
     ) -> GoalLeaseClaim | None:
-        now_value = datetime.now(UTC)
-        now = _time(now_value)
-        expires_at = _expires(now_value, lease_ttl_seconds)
         with self.store.transaction() as connection:
+            # Waiting for SQLite's write lock must not consume a newly issued lease.
+            now_value = datetime.now(UTC)
+            now = _time(now_value)
+            expires_at = _expires(now_value, lease_ttl_seconds)
             goal = connection.execute(
                 "SELECT project_id,state FROM autonomous_goals WHERE id=?", (goal_id,)
             ).fetchone()
@@ -362,15 +369,19 @@ class AutonomousHostRepository:
         *,
         lease_ttl_seconds: float,
     ) -> bool:
-        now_value = datetime.now(UTC)
         iteration_id, action_id, in_flight = self._goal_position(claim.goal_id)
         with self.store.transaction() as connection:
+            # Recheck expiry after any observation or write-lock wait. A heartbeat
+            # must never resurrect an expired generation, even before takeover.
+            now_value = datetime.now(UTC)
+            now = _time(now_value)
             cursor = connection.execute(
                 "UPDATE autonomous_goal_leases SET heartbeat_at=?,expires_at=?,"
                 "current_iteration_id=?,current_action_id=?,in_flight_state=? "
-                "WHERE goal_id=? AND host_id=? AND generation=? AND state='owned'",
+                "WHERE goal_id=? AND host_id=? AND generation=? AND state='owned' "
+                "AND expires_at>?",
                 (
-                    _time(now_value),
+                    now,
                     _expires(now_value, lease_ttl_seconds),
                     iteration_id,
                     action_id,
@@ -378,6 +389,7 @@ class AutonomousHostRepository:
                     claim.goal_id,
                     claim.host_id,
                     claim.generation,
+                    now,
                 ),
             )
         return cursor.rowcount == 1
@@ -426,7 +438,7 @@ class AutonomousHostRepository:
             )
             if cursor.rowcount:
                 goal = connection.execute(
-                    "SELECT project_id FROM autonomous_goals WHERE id=?", (claim.goal_id,)
+                    "SELECT project_id FROM autonomous_goals WHERE id=?", (claim.goal_id,),
                 ).fetchone()
                 self.store._append_event(
                     connection,
@@ -642,12 +654,11 @@ class AutonomousHost:
         error: BaseException | None = None
         lost = False
         try:
-            value = self.engine_factory(claim.goal_id)
-            engine = await value if inspect.isawaitable(value) else value
-            if not isinstance(engine, AutonomousIterationEngine):
-                raise TypeError("engine_factory must return AutonomousIterationEngine")
-            engine.set_ownership_guard(lambda: self.repository.assert_goal_lease(claim))
-            engine_task = asyncio.create_task(engine.run(claim.goal_id))
+            # Initialization is part of the leased operation, not a gap before it.
+            # Keep asynchronous factory waits under the same heartbeat/cancel loop.
+            engine_task = asyncio.create_task(
+                self._build_and_run_engine(claim), name=f"autonomous-engine:{claim.goal_id}"
+            )
             while not engine_task.done():
                 done, _ = await asyncio.wait(
                     {engine_task},
@@ -678,6 +689,8 @@ class AutonomousHost:
             return result
         except BaseException as caught:
             error = caught
+            # The engine's ownership guard can detect loss before the heartbeat.
+            lost = lost or isinstance(caught, GoalLeaseLost)
             if engine_task is not None and not engine_task.done():
                 engine_task.cancel()
                 await asyncio.gather(engine_task, return_exceptions=True)
@@ -688,6 +701,27 @@ class AutonomousHost:
                 error=str(redact_sensitive(str(error))) if error else None,
                 lost=lost,
             )
+
+    async def _build_and_run_engine(self, claim: GoalLeaseClaim) -> dict[str, Any]:
+        """Fence both sides of initialization before handing control to the engine.
+
+        Factories assemble engines; they must not dispatch Goal work themselves.
+        Synchronous factories must remain non-blocking because they share the event loop.
+        """
+
+        self.repository.assert_goal_lease(claim)
+        value = self.engine_factory(claim.goal_id)
+        engine = await value if inspect.isawaitable(value) else value
+        current = asyncio.current_task()
+        if current is not None and current.cancelling():
+            raise asyncio.CancelledError
+        if not isinstance(engine, AutonomousIterationEngine):
+            raise TypeError("engine_factory must return AutonomousIterationEngine")
+        # A factory may return after lease expiry/takeover, including if it suppressed
+        # cancellation. Its completion never restores execution authority.
+        self.repository.assert_goal_lease(claim)
+        engine.set_ownership_guard(lambda: self.repository.assert_goal_lease(claim))
+        return await engine.run(claim.goal_id)
 
     def _reap_finished(self) -> None:
         for goal_id, task in list(self._active.items()):

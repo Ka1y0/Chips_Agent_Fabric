@@ -5,6 +5,7 @@ import hashlib
 import json
 import sys
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,13 @@ from project_supervisor.domain import (
     WorkerSnapshot,
     WorkerState,
 )
+from project_supervisor.fabric.capabilities import (
+    ObservationFreshness,
+    WorkerDynamicState,
+    WorkerHealth,
+    WorkerManifest,
+)
+from project_supervisor.fabric.persistence import CapabilityRegistryRepository
 from project_supervisor.runtime import AdapterRegistry, SupervisorRuntime
 from project_supervisor.scheduler import DeterministicScheduler
 from project_supervisor.store import StateStore, timestamp
@@ -225,6 +233,99 @@ def _insert_iteration(store: StateStore, goal_id: str, sequence: int = 1) -> str
             (iteration_id, goal_id, sequence, "evaluating", now, now),
         )
     return iteration_id
+
+
+def test_planning_inventory_uses_current_safe_capability_snapshot(tmp_path: Path) -> None:
+    store = _store(tmp_path, harness=Harness.MOCK)
+    with store.transaction() as connection:
+        connection.execute(
+            "UPDATE workers SET capabilities_json=? WHERE id='worker-1'",
+            (json.dumps(["legacy-only", "token=PRIVATE_LEGACY_MARKER"]),),
+        )
+    registry = CapabilityRegistryRepository(store)
+    expired = WorkerManifest(
+        worker_id="worker-1",
+        node_id="node-1",
+        provider_id="mock",
+        adapter_kind="mock",
+        capabilities=("read-text",),
+        manifest_revision=1,
+    )
+    registry.register_manifest(
+        expired,
+        observed_at=datetime(1999, 1, 1, tzinfo=UTC),
+        valid_until=datetime(2000, 1, 1, tzinfo=UTC),
+    )
+    runtime = SupervisorRuntime(
+        store=store,
+        scheduler=DeterministicScheduler(),
+        adapters=AdapterRegistry(),
+        evidence_root=tmp_path / "evidence",
+    )
+    driver = ProductionAutonomyDriver(runtime)
+
+    expired_inventory = driver._planning_worker_inventory()
+
+    assert len(expired_inventory) == 1
+    expired_worker = expired_inventory[0]
+    assert {
+        "workerID",
+        "provider",
+        "model",
+        "state",
+        "nodeState",
+        "resourceState",
+        "capabilities",
+        "codeWriteAllowed",
+        "privacyAllowed",
+    } <= set(expired_worker)
+    assert expired_worker["manifestStatus"] == "expired"
+    assert expired_worker["capabilities"] == []
+    assert expired_worker["health"] == "unknown"
+    assert expired_worker["quotaState"] == "unknown"
+
+    current = WorkerManifest(
+        worker_id="worker-1",
+        node_id="node-1",
+        provider_id="mock",
+        adapter_kind="mock",
+        capabilities=("read-image",),
+        max_concurrency=2,
+        manifest_revision=2,
+    )
+    registry.register_manifest(
+        current,
+        observed_at=datetime(2026, 1, 1, tzinfo=UTC),
+        valid_until=datetime(2100, 1, 1, tzinfo=UTC),
+        expected_head_generation=1,
+    )
+    registry.record_observation(
+        WorkerDynamicState(
+            worker_id="worker-1",
+            health=WorkerHealth.DEGRADED,
+            health_freshness=ObservationFreshness.FRESH,
+            load=0.25,
+            observed_at=datetime(2026, 8, 12, tzinfo=UTC),
+        )
+    )
+
+    inventory = driver._planning_worker_inventory()
+
+    assert inventory[0]["manifestStatus"] == "current"
+    assert inventory[0]["capabilities"] == ["read-image"]
+    assert inventory[0]["manifestValidUntil"] == "2100-01-01T00:00:00Z"
+    assert inventory[0]["health"] == "degraded"
+    assert inventory[0]["healthFreshness"] == "fresh"
+    assert inventory[0]["quotaState"] == "unknown"
+    assert inventory[0]["quotaFreshness"] == "unknown"
+    assert inventory[0]["subscriptionState"] == "unknown"
+    assert inventory[0]["workerLoad"] == 0.25
+    assert inventory[0]["runningTasks"] == 0
+    assert inventory[0]["maxConcurrency"] == 2
+    serialized = json.dumps(inventory, sort_keys=True)
+    assert "PRIVATE_LEGACY_MARKER" not in serialized
+    assert "manifestDigest" not in serialized
+    assert "capabilityClaims" not in serialized
 
 
 @pytest.mark.asyncio

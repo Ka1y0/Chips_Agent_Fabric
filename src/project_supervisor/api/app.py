@@ -244,6 +244,213 @@ def create_app(
             }
         )
 
+    @app.get("/v1/fabric/capabilities", dependencies=[Depends(authorize)])
+    async def fabric_capabilities() -> dict:
+        return envelope(
+            {
+                "protocolVersion": "fabric-v0.3-dev",
+                "workers": await asyncio.to_thread(projection.fabric_capabilities),
+            }
+        )
+
+    @app.get("/v1/fabric/routing", dependencies=[Depends(authorize)])
+    async def fabric_routing(
+        task_id: str | None = Query(default=None, alias="taskID"),
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> dict:
+        return envelope(
+            await asyncio.to_thread(projection.fabric_routing, task_id=task_id, limit=limit)
+        )
+
+    @app.get("/v1/fabric/execution-plane", dependencies=[Depends(authorize)])
+    async def fabric_execution_plane(
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> dict:
+        return envelope(
+            {
+                "protocolVersion": "execution-plane/v1",
+                "workers": await asyncio.to_thread(
+                    projection.execution_plane,
+                    limit=limit,
+                ),
+            }
+        )
+
+    @app.get("/v1/fabric/authorizations", dependencies=[Depends(authorize)])
+    async def fabric_authorizations(
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> dict:
+        return envelope(
+            {
+                "protocolVersion": "authorization-envelope/v1",
+                "authorizations": await asyncio.to_thread(
+                    projection.fabric_authorizations,
+                    limit=limit,
+                ),
+            }
+        )
+
+    @app.get("/v1/fabric/data-provenance", dependencies=[Depends(authorize)])
+    async def fabric_data_provenance(
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> dict:
+        return envelope(
+            {
+                "movements": await asyncio.to_thread(
+                    projection.data_provenance,
+                    limit=limit,
+                )
+            }
+        )
+
+    @app.get("/v1/fabric/provider-invocations", dependencies=[Depends(authorize)])
+    async def fabric_provider_invocations(
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> dict:
+        return envelope(
+            {
+                "invocations": await asyncio.to_thread(
+                    projection.provider_invocations_v2,
+                    limit=limit,
+                )
+            }
+        )
+
+    @app.get("/v1/fabric/hypotheses", dependencies=[Depends(authorize)])
+    async def fabric_hypotheses(
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> dict:
+        return envelope(
+            {
+                "hypothesisSets": await asyncio.to_thread(
+                    projection.hypothesis_sets,
+                    limit=limit,
+                )
+            }
+        )
+
+    @app.get("/v1/fabric/write-authorities", dependencies=[Depends(authorize)])
+    async def fabric_write_authorities(
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> dict:
+        return envelope(
+            {
+                "writeAuthorities": await asyncio.to_thread(
+                    projection.project_write_authorities,
+                    limit=limit,
+                )
+            }
+        )
+
+    @app.get("/v1/fabric/spawn-proposals", dependencies=[Depends(authorize)])
+    async def fabric_spawn_proposals(
+        goal_id: str | None = Query(default=None, alias="goalID"),
+        parent_task_id: str | None = Query(default=None, alias="parentTaskID"),
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> dict:
+        return envelope(
+            await asyncio.to_thread(
+                projection.spawn_proposals,
+                goal_id=goal_id,
+                parent_task_id=parent_task_id,
+                limit=limit,
+            )
+        )
+
+    @app.get("/v1/fabric/fusions", dependencies=[Depends(authorize)])
+    async def fabric_fusions(
+        task_id: str | None = Query(default=None, alias="taskID"),
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> dict:
+        return envelope(
+            await asyncio.to_thread(projection.fusion_decisions, task_id=task_id, limit=limit)
+        )
+
+    @app.get("/v1/interactions", dependencies=[Depends(authorize)])
+    async def interactions(
+        task_id: str | None = Query(default=None, alias="taskID"),
+        state: str | None = None,
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> dict:
+        allowed_states = {
+            "planned",
+            "observing",
+            "grounding",
+            "acting",
+            "verifying",
+            "succeeded",
+            "failed",
+            "escalated",
+        }
+        if state is not None and state not in allowed_states:
+            raise HTTPException(status_code=400, detail="invalid interaction state")
+        return envelope(
+            await asyncio.to_thread(
+                projection.interactions,
+                task_id=task_id,
+                state=state,
+                limit=limit,
+            )
+        )
+
+    @app.get("/v1/interaction-resources", dependencies=[Depends(authorize)])
+    async def interaction_resources(
+        resource_type: str | None = Query(default=None, alias="resourceType"),
+        active_only: bool = Query(default=False, alias="activeOnly"),
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> dict:
+        allowed_types = {
+            "desktopSession",
+            "browserContext",
+            "window",
+            "mouse",
+            "keyboard",
+            "clipboard",
+            "display",
+        }
+        if resource_type is not None and resource_type not in allowed_types:
+            raise HTTPException(status_code=400, detail="invalid interaction resource type")
+        return envelope(
+            await asyncio.to_thread(
+                projection.interaction_resources,
+                resource_type=resource_type,
+                active_only=active_only,
+                limit=limit,
+            )
+        )
+
+    @app.get("/v1/skills", dependencies=[Depends(authorize)])
+    async def semantic_skills(
+        app_id: str | None = Query(default=None, alias="appID"),
+        lifecycle: str | None = None,
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> dict:
+        allowed_lifecycles = {
+            "observed",
+            "candidate",
+            "validated",
+            "active",
+            "stale",
+            "disabled",
+        }
+        if lifecycle is not None and lifecycle not in allowed_lifecycles:
+            raise HTTPException(status_code=400, detail="invalid skill lifecycle")
+        return envelope(
+            await asyncio.to_thread(
+                projection.semantic_skills,
+                app_id=app_id,
+                lifecycle=lifecycle,
+                limit=limit,
+            )
+        )
+
+    @app.get("/v1/ui-graph", dependencies=[Depends(authorize)])
+    async def ui_graph(
+        app_id: str | None = Query(default=None, alias="appID"),
+        limit: int = Query(default=200, ge=1, le=500),
+    ) -> dict:
+        return envelope(await asyncio.to_thread(projection.ui_graph, app_id=app_id, limit=limit))
+
     @app.get("/v1/status", dependencies=[Depends(authorize)])
     async def status() -> dict:
         return envelope(await asyncio.to_thread(projection.status))

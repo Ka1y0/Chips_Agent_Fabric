@@ -395,6 +395,79 @@ def _local_worker_tokens(endpoints: dict[str, str]) -> dict[str, str]:
     return {worker_id: local_worker_token(account=worker_id) for worker_id in endpoints}
 
 
+def _execution_plane_recovery(
+    args: argparse.Namespace,
+    *,
+    store: StateStore,
+    adapters: AdapterRegistry,
+):
+    enrollment_id = getattr(args, "execution_plane_enrollment", None)
+    execution_plane_workers = getattr(args, "execution_plane_worker", [])
+    platform_approved = bool(getattr(args, "execution_plane_platform_approved", False))
+    if enrollment_id is None:
+        if execution_plane_workers or platform_approved:
+            raise ValueError("execution-plane Worker options require an admitted enrollment")
+        return None
+    if len(execution_plane_workers) != 1:
+        raise ValueError("the Phase 2B autonomous host requires exactly one enrolled probe Worker")
+    from .adapters import LocalWorkerAdapter
+    from .credentials import runtime_broker_token
+    from .fabric.execution_plane import (
+        EvidenceState,
+        ExecutionPlaneRecoveryCoordinator,
+        ExecutionPlaneRepository,
+        HTTPSFabricRuntimeBootstrap,
+        LocalWorkerFabricRuntimeProbe,
+        LocalWorkerProbeBinding,
+        PlatformApprovalState,
+        TailscaleCLITransportDiscovery,
+    )
+    from .fabric.node_enrollment import NodeEnrollmentRepository
+
+    configured = NodeEnrollmentRepository(store).admitted_runtime_configuration(enrollment_id)
+    worker_id = execution_plane_workers[0]
+    with store.connect() as connection:
+        worker = connection.execute(
+            "SELECT node_id FROM workers WHERE id=?", (worker_id,)
+        ).fetchone()
+    if worker is None or worker["node_id"] != configured["node_id"]:
+        raise ValueError("execution-plane probe Worker is not owned by the admitted Node")
+    adapter = adapters.get(worker_id)
+    if not isinstance(adapter, LocalWorkerAdapter):
+        raise ValueError("execution-plane recovery currently probes one Local Worker adapter")
+    probe = LocalWorkerFabricRuntimeProbe(
+        (
+            LocalWorkerProbeBinding(
+                endpoint_ref=configured["endpoint_ref"],
+                node_id=configured["node_id"],
+                worker_ids=(worker_id,),
+                adapter=adapter,
+                authorized=EvidenceState.YES,
+                platform_approval=(
+                    PlatformApprovalState.APPROVED
+                    if platform_approved
+                    else PlatformApprovalState.UNKNOWN
+                ),
+            ),
+        )
+    )
+    bootstrap = HTTPSFabricRuntimeBootstrap(
+        configured["broker_endpoint"],
+        bearer_token=runtime_broker_token(account=enrollment_id),
+        broker_authority_id=configured["broker_authority_id"],
+        broker_registry_id=configured["broker_registry_id"],
+        service_profile_revision=configured["service_profile_revision"],
+        service_profile_sha256=configured["broker_runtime_profile_sha256"],
+    )
+    return ExecutionPlaneRecoveryCoordinator(
+        repository=ExecutionPlaneRepository(store),
+        discovery=TailscaleCLITransportDiscovery(),
+        probe=probe,
+        bootstrap=bootstrap,
+        recovery_owner_id=(args.host_id or "autonomous-host") + ".execution-plane",
+    )
+
+
 def _build_autonomous_host(args: argparse.Namespace):
     from .autonomous_host import AutonomousHost, AutonomousHostConfig
     from .autonomy import AutonomousIterationEngine, SupervisorRuntimeDispatcher
@@ -419,6 +492,11 @@ def _build_autonomous_host(args: argparse.Namespace):
         adapters=adapters,
         evidence_root=config.data_dir / "evidence",
         worker_timeout_seconds=config.worker_timeout_seconds,
+        execution_plane_recovery=_execution_plane_recovery(
+            args,
+            store=store,
+            adapters=adapters,
+        ),
     )
     driver = ProductionAutonomyDriver(runtime)
     dispatcher = SupervisorRuntimeDispatcher(runtime)
@@ -703,6 +781,21 @@ def build_parser() -> argparse.ArgumentParser:
             "--allow-mock-worker",
             action="store_true",
             help="explicit test-only opt-in for persisted Mock Workers",
+        )
+        command.add_argument(
+            "--execution-plane-enrollment",
+            help="admitted Windows Node enrollment used for typed runtime recovery",
+        )
+        command.add_argument(
+            "--execution-plane-worker",
+            action="append",
+            default=[],
+            help="operator-approved Local Worker on the admitted Node (Phase 2B: exactly one)",
+        )
+        command.add_argument(
+            "--execution-plane-platform-approved",
+            action="store_true",
+            help="assert the enrolled Worker's platform approval was independently verified",
         )
 
     autonomous_run = autonomous_commands.add_parser(

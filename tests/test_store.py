@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+import project_supervisor.store as store_module
 from project_supervisor.domain import (
     ExecutionTopology,
     Harness,
@@ -438,12 +439,64 @@ def test_stale_execution_generation_cannot_mutate_replacement_attempt(
             lease_owner_id="runtime-a",
             lease_generation=first["leaseGeneration"],
         )
-
     assert store.get_task("task-1")["state"] == TaskState.RUNNING.value
     assert store.get_task("task-1")["attempt_count"] == 2
     second_run = store.get_worker_run(second["runIDs"]["worker-1"])
     assert second_run["state"] == RunState.STARTING.value
     assert store.list_workers()[0]["state"] == WorkerState.STARTING.value
+
+
+def test_execution_lease_expiry_rounds_outward_at_second_boundary(
+    store: StateStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store.upsert_node(
+        node_id="node-1",
+        hostname="node-1",
+        display_name="Node 1",
+        role="control",
+        state=NodeState.ONLINE,
+    )
+    store.upsert_worker(worker_snapshot("worker-1"))
+    store.create_task(task_record(), "#001")
+    store.transition_task("task-1", TaskState.QUEUED)
+    ready = store.transition_task("task-1", TaskState.READY)
+
+    class BoundaryDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ANN206
+            return cls(2026, 8, 14, 12, 0, 0, 999_000, tzinfo=tz or UTC)
+
+    monkeypatch.setattr(store_module, "datetime", BoundaryDatetime)
+    claim = store.claim_task_dispatch(
+        "task-1",
+        ["worker-1"],
+        expected_version=ready["version"],
+        lease_owner_id="runtime-boundary",
+        lease_ttl_seconds=1,
+    )
+
+    assert claim is not None
+    with store.connect() as connection:
+        lease = connection.execute(
+            "SELECT acquired_at,expires_at FROM task_execution_leases WHERE task_id=?",
+            ("task-1",),
+        ).fetchone()
+    assert dict(lease) == {
+        "acquired_at": "2026-08-14T12:00:00Z",
+        "expires_at": "2026-08-14T12:00:02Z",
+    }
+    assert store.heartbeat_task_execution_lease(
+        "task-1",
+        owner_id="runtime-boundary",
+        generation=claim["leaseGeneration"],
+        ttl_seconds=1,
+    )
+    assert store.task_execution_lease_is_current(
+        "task-1",
+        owner_id="runtime-boundary",
+        generation=claim["leaseGeneration"],
+    )
 
 
 def test_worker_result_is_immutable_and_identical_replay_is_idempotent(

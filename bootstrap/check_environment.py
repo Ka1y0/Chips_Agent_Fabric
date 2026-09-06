@@ -217,7 +217,15 @@ def _lm_studio_application(system: str, environ: Mapping[str, str]) -> str | Non
         candidates.append(
             Path(environ["LOCALAPPDATA"]) / "Programs" / "LM Studio" / "LM Studio.exe"
         )
-    return next((str(path) for path in candidates if path.exists()), None)
+    for path in candidates:
+        try:
+            if path.exists():
+                return str(path)
+        except OSError:
+            # Optional application discovery is deliberately best-effort.  A protected parent
+            # directory on Windows must not make the whole credential-free bootstrap fail.
+            continue
+    return None
 
 
 def inspect(

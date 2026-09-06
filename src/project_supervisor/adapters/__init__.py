@@ -1,6 +1,7 @@
 from .agy import AgyAdapter
 from .base import (
     AdapterError,
+    AuthorizationReference,
     DurableWorkerAdapter,
     EventSink,
     IdempotentLaunchWorkerAdapter,
@@ -39,6 +40,7 @@ from .native import (
 
 __all__ = [
     "AdapterError",
+    "AuthorizationReference",
     "AgyAdapter",
     "ClaudeAdapter",
     "CodexAdapter",

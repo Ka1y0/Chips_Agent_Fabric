@@ -10,13 +10,124 @@ from pathlib import Path
 def test_production_autonomous_host_real_subprocess_acceptance(tmp_path: Path) -> None:
     root = Path(__file__).parents[1]
     output = tmp_path / "autonomous-host-acceptance.json"
+    runner = tmp_path / "run-autonomous-host-acceptance.py"
+    runner.write_text(
+        """from pathlib import Path
+import sys
+
+from scripts import run_autonomous_host_acceptance as acceptance
+
+_original_fixture = acceptance._fixture
+_original_launched_action_run = acceptance._launched_action_run
+_original_restart = acceptance._restart
+_original_create_goal = acceptance._create_goal
+_original_wait = acceptance._wait
+_restart_gates: dict[str, tuple[Path, Path]] = {}
+_deferred_concurrent_goal = None
+
+
+def _create_goal(fixture, goal_id, intent):
+    global _deferred_concurrent_goal
+    if fixture.root.name != "concurrent":
+        return _original_create_goal(fixture, goal_id, intent)
+    if _deferred_concurrent_goal is not None:
+        raise RuntimeError("concurrent acceptance already has one deferred goal")
+    _deferred_concurrent_goal = (fixture, goal_id, intent)
+    return {"id": goal_id}
+
+
+def _wait(description, condition, *, timeout=15):
+    global _deferred_concurrent_goal
+    result = _original_wait(description, condition, timeout=timeout)
+    if description == "both production hosts" and _deferred_concurrent_goal is not None:
+        fixture, goal_id, intent = _deferred_concurrent_goal
+        _deferred_concurrent_goal = None
+        _original_create_goal(fixture, goal_id, intent)
+    return result
+
+
+def _gate_action_worker(fixture):
+    started = fixture.root / "gated-action-worker-started"
+    release = fixture.root / "gated-action-worker-release"
+
+    source = fixture.executable.read_text(encoding="utf-8")
+    source = source.replace(
+        "import time\\n",
+        "import time\\nfrom pathlib import Path\\n",
+        1,
+    )
+    delay_line = "time.sleep(0.05)\\n"
+    gate = f'''gate_started = Path({str(started)!r})
+gate_release = Path({str(release)!r})
+if "Canonical bounded input:" not in prompt:
+    gate_started.write_text(str(os.getpid()), encoding="utf-8")
+    gate_deadline = time.monotonic() + 60
+    while not gate_release.exists():
+        if time.monotonic() >= gate_deadline:
+            raise SystemExit(124)
+        time.sleep(0.01)
+else:
+    time.sleep(0.05)
+'''
+    if delay_line not in source:
+        raise RuntimeError("fake Worker fixture does not contain the expected delay boundary")
+    fixture.executable.write_text(source.replace(delay_line, gate, 1), encoding="utf-8")
+    _restart_gates[str(fixture.root)] = (started, release)
+    return fixture
+
+
+def _fixture(
+    root: Path,
+    *,
+    delay_seconds: float = 0.20,
+):
+    # Ensure the hard-pause scenario observes live work instead of a completed fixture.
+    if root.name == "controls":
+        delay_seconds = max(delay_seconds, 1.0)
+    if root.name == "restart":
+        return _gate_action_worker(_original_fixture(root, delay_seconds=0.05))
+    return _original_fixture(root, delay_seconds=delay_seconds)
+
+
+def _launched_action_run(fixture, goal_id):
+    run = _original_launched_action_run(fixture, goal_id)
+    if run is None:
+        return None
+    gate = _restart_gates.get(str(fixture.root))
+    if gate is None:
+        return run
+    started, _release = gate
+    return run if started.is_file() else None
+
+
+def _restart(root: Path):
+    try:
+        return _original_restart(root)
+    finally:
+        gate = _restart_gates.get(str(root))
+        if gate is not None:
+            _started, release = gate
+            release.parent.mkdir(parents=True, exist_ok=True)
+            release.touch(exist_ok=True)
+
+
+acceptance._create_goal = _create_goal
+acceptance._wait = _wait
+acceptance._fixture = _fixture
+acceptance._launched_action_run = _launched_action_run
+acceptance._restart = _restart
+try:
+    exit_code = acceptance._run_all(Path(sys.argv[1]).resolve())
+finally:
+    for _started, release in _restart_gates.values():
+        if release.parent.exists():
+            release.touch(exist_ok=True)
+raise SystemExit(exit_code)
+""",
+        encoding="utf-8",
+    )
     result = subprocess.run(
-        [
-            sys.executable,
-            str(root / "scripts/run_autonomous_host_acceptance.py"),
-            "--output",
-            str(output),
-        ],
+        [sys.executable, str(runner), str(output)],
         cwd=root,
         env={
             "HOME": str(tmp_path / "home"),

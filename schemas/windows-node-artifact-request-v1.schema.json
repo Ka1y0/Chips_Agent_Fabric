@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:chips:fabric:windows-node-artifact-request:v1",
+  "title": "Windows Node Artifact Request V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "requestID",
+    "hostName",
+    "platform",
+    "architecture",
+    "windowsBuild",
+    "tailscalePeerIdentity",
+    "tailscaleServeURL",
+    "machineBindingSHA256",
+    "requestedArtifactContract",
+    "requestedAt",
+    "expiresAt"
+  ],
+  "properties": {
+    "schemaVersion": {"const": "windows-node-artifact-request/v1"},
+    "requestID": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,159}$"},
+    "hostName": {"type": "string", "minLength": 1, "maxLength": 253},
+    "platform": {"const": "windows"},
+    "architecture": {"const": "x64"},
+    "windowsBuild": {"type": "string", "minLength": 1, "maxLength": 128},
+    "tailscalePeerIdentity": {"type": "string", "minLength": 1, "maxLength": 512},
+    "tailscaleServeURL": {
+      "type": "string",
+      "pattern": "^https://[^@/?#]+(?::[0-9]+)?/$",
+      "maxLength": 1024
+    },
+    "machineBindingSHA256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "requestedArtifactContract": {"const": "chips-windows-fabric-node-phase2"},
+    "requestedAt": {"type": "string", "format": "date-time"},
+    "expiresAt": {"type": "string", "format": "date-time"}
+  }
+}

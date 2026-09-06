@@ -1,4 +1,13 @@
-# Deterministic Hybrid Engine
+# Deterministic routing and Hybrid topology planning
+
+`HybridEngine` decides **how** a workload is decomposed: single stage, primary/reviewer,
+bounded parallel panel, cheap-first escalation, or a role-aware DAG. `ClusterPlanner` expands that
+DAG under the canonical `SpawnPolicy` but leaves every `workerID` unset.
+
+`DeterministicScheduler` decides **which Worker** executes each stage from a frozen snapshot. It owns
+capability and parameter matching, locality, privacy, approval, availability, quota, cost, latency,
+quality, reliability, load, and stable tie-breaking. Neither Hybrid nor cluster planning may bypass
+the scheduler, acquire authority, or silently route privacy-sensitive work to remote capacity.
 
 ## Implemented V0
 
@@ -9,6 +18,41 @@ reasons. Supported topologies are `SINGLE`, `PRIMARY_REVIEWER`, `PARALLEL_PANEL`
 
 Hard constraints include required capability, permission class, privacy/local-only policy, code-write
 policy, health/availability, and topology eligibility. A score cannot override a hard rejection.
+
+For Phase 2 Workers, routing is followed by an atomic execution claim that rechecks the exact fresh
+runtime observation, authorization envelope, Worker-class/provider constraints, and provider
+capacity reservation. A transport-reachable but runtime-unavailable Worker is not executable.
+Recoverable absence creates a bounded durable capacity wait; only a verified recovery observation
+returns the same Task to dispatch without incrementing its attempt. See
+[`MULTI_NODE_EXECUTION_PLANE.md`](MULTI_NODE_EXECUTION_PLANE.md).
+
+## V0.3 provider-independent capability routing
+
+The capability-aware policy consumes versioned static Worker manifests and separately observed
+dynamic state. A capability describes work, not a provider: Codex, Claude, a local model, or a future
+adapter may all advertise the same canonical capability without changing Task semantics. Aliases
+are resolved through the declared catalog version. Unknown capabilities, unsupported manifest or
+catalog versions, conflicting claims, and invalid parameter schemas fail closed.
+
+Tasks can require or prefer capabilities and can bind typed parameter limits. Numeric Worker limits
+must be at least the requested value; boolean and string values must match exactly. Parameterized
+requirements cannot be satisfied by a legacy unversioned Worker snapshot. Additional hard gates
+cover manifest version, locality, minimum quality, maximum known incremental cost, privacy class,
+health, and maximum concurrency. An explicit Worker override is reproducibility input only and
+still passes every safety gate.
+
+Eligible candidates receive named score components for preferred capability fit, health, Worker
+load, quota freshness, and billing mode in addition to the existing quality, availability, quota,
+cost, latency, reliability, Node load, privacy, and context inputs. The default billing preference
+is current subscription availability, then local/free, other paid, metered, and finally unknown.
+`UNKNOWN` is never treated as free or unlimited, and it cannot satisfy an explicit incremental-cost
+ceiling.
+
+Every decision records its policy version, weights, candidate components, stable rejection codes,
+catalog version, and deterministic tie-break. Dynamic health, quota, or load changes can reroute a
+later frozen snapshot without rewriting the immutable Worker manifest; a new manifest revision can
+change static privacy eligibility. See [`CAPABILITY_FABRIC.md`](CAPABILITY_FABRIC.md) for the
+manifest and observation contracts.
 
 ## V0.4 resource-aware deterministic routing
 
@@ -49,7 +93,7 @@ for every prerequisite to succeed. Failed/cancelled prerequisites block dependen
 IDs and states instead of leaving them indefinitely READY; independent Tasks can still launch in the
 same pass when separate Worker capacity exists.
 
-## Hybrid Engine V1 foundation
+## Hybrid routing-input foundation
 
 Normalized routing inputs include context requirement, node/model availability, observable quota,
 latency, configured cost score, historical reliability, node load, and expected quality. Missing

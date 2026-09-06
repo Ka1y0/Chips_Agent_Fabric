@@ -22,6 +22,7 @@ from .domain import (
     Harness,
     ModelDescriptor,
     NodeState,
+    PermissionClass,
     ProjectPhase,
     Provider,
     ResourceState,
@@ -32,6 +33,16 @@ from .domain import (
     TelemetryValue,
     WorkerSnapshot,
     WorkerState,
+)
+from .fabric.capabilities import (
+    CapabilityClaim,
+    CostMode,
+    ObservationFreshness,
+    QuotaAvailability,
+    SubscriptionState,
+    WorkerHealth,
+    WorkerLocality,
+    WorkerPrivacy,
 )
 from .hybrid import ExecutionHistoryRecord
 from .protocols.capabilities import CapabilityGrant, GrantState
@@ -47,6 +58,22 @@ else:
 
 def timestamp(value: datetime | None = None) -> str:
     return (value or datetime.now(UTC)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def lease_expiry_timestamp(value: datetime, ttl_seconds: float) -> str:
+    """Round lease expiry outward so second precision never shortens the requested TTL."""
+
+    expires_at = value.astimezone(UTC) + timedelta(seconds=float(ttl_seconds))
+    if expires_at.microsecond:
+        expires_at = expires_at.replace(microsecond=0) + timedelta(seconds=1)
+    return timestamp(expires_at)
+
+
+def _aware_timestamp(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("timestamp must be timezone-aware")
+    return parsed.astimezone(UTC)
 
 
 def compact_json(value: Any) -> str:
@@ -374,6 +401,32 @@ class StateStore:
 
     def create_task(self, task: TaskRecord, reference: str) -> dict[str, Any]:
         now = timestamp(task.created_at)
+        capability_contract = {
+            "schemaVersion": "capability-request/v1",
+            "required": [
+                claim.to_protocol() for claim in task.requirements.required_capability_parameters
+            ],
+            "requiredManifestSchemaVersion": (task.requirements.required_manifest_schema_version),
+            "requiredCatalogVersion": (task.requirements.required_capability_catalog_version),
+        }
+        try:
+            execution_spec = json.loads(
+                json.dumps(
+                    task.execution_spec,
+                    allow_nan=False,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError("task execution spec must be finite JSON") from error
+        if not isinstance(execution_spec, dict):
+            raise ValueError("task execution spec must be a JSON object")
+        if len(compact_json(execution_spec).encode("utf-8")) > 131_072:
+            raise ValueError("task execution spec exceeds its byte limit")
+        if redact_sensitive(execution_spec) != execution_spec:
+            raise ValueError("task execution spec must not contain credential-shaped fields")
         with self.transaction() as connection:
             connection.execute(
                 """
@@ -381,8 +434,10 @@ class StateStore:
                     id,project_id,reference,title,description,state,topology,priority,labels_json,
                     required_capabilities_json,permission_class,approval_state,minimum_context_tokens,
                     privacy_sensitive,code_write_required,panel_size,preferred_workers_json,
+                    preferred_capabilities_json,capability_constraints_json,local_only,
+                    minimum_quality,max_incremental_cost_usd,explicit_worker_id,execution_spec_json,
                     attempt_count,version,created_at,updated_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     task.id,
@@ -402,6 +457,13 @@ class StateStore:
                     int(task.requirements.code_write_required),
                     task.requirements.panel_size,
                     compact_json(list(task.requirements.preferred_workers)),
+                    compact_json(sorted(task.requirements.preferred_capabilities)),
+                    compact_json(capability_contract),
+                    int(task.requirements.local_only),
+                    task.requirements.minimum_quality_score,
+                    task.requirements.max_incremental_cost_usd,
+                    task.requirements.explicit_worker_override,
+                    compact_json(execution_spec),
                     task.attempt_count,
                     1,
                     now,
@@ -1100,6 +1162,7 @@ class StateStore:
         expected_verification_scope_id: str | None = None,
         expected_task_definition_revision: int | None = None,
         expected_source_attempt: int | None = None,
+        expected_steer_version: int | None = None,
     ) -> TaskState:
         """Persist a complete verification decision and Task transition atomically.
 
@@ -1116,6 +1179,25 @@ class StateStore:
                 raise RuntimeError(f"task {task_id} is not awaiting verification")
             if max_attempts is not None and max_attempts < 1:
                 raise ValueError("max_attempts must be positive")
+            if expected_steer_version is not None:
+                binding = connection.execute(
+                    "SELECT binding.steer_version,goal.steer_version AS current_steer_version "
+                    "FROM autonomous_task_bindings binding JOIN autonomous_goals goal "
+                    "ON goal.id=binding.goal_id WHERE binding.task_id=?",
+                    (task_id,),
+                ).fetchone()
+                if binding is None:
+                    if expected_steer_version != 0:
+                        raise VerificationPolicyError(
+                            "stale verification provenance: Task has no matching steer authority"
+                        )
+                elif (
+                    int(binding["steer_version"]) != expected_steer_version
+                    or int(binding["current_steer_version"]) != expected_steer_version
+                ):
+                    raise VerificationPolicyError(
+                        "stale verification provenance: Goal steering version changed"
+                    )
             verification_scope_id = task["current_verification_scope_id"]
             scoped = verification_scope_id is not None
             source_attempt: int | None = None
@@ -1432,15 +1514,17 @@ class StateStore:
                 """
                 INSERT INTO workers(
                     id,node_id,harness,provider,model_id,state,resource_state,capabilities_json,
+                    worker_classes_json,
                     code_write_allowed,privacy_allowed,quality_score,reliability_score,
                     expected_latency_seconds,monetary_cost_score,harness_version,last_heartbeat_at,
                     created_at,updated_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET
                     node_id=excluded.node_id,harness=excluded.harness,provider=excluded.provider,
                     model_id=excluded.model_id,state=excluded.state,
                     resource_state=excluded.resource_state,
                     capabilities_json=excluded.capabilities_json,
+                    worker_classes_json=excluded.worker_classes_json,
                     code_write_allowed=excluded.code_write_allowed,
                     privacy_allowed=excluded.privacy_allowed,quality_score=excluded.quality_score,
                     reliability_score=excluded.reliability_score,
@@ -1458,6 +1542,7 @@ class StateStore:
                     worker.state.value,
                     worker.resource_state.value,
                     compact_json(sorted(worker.capabilities)),
+                    compact_json(sorted(worker.worker_classes)),
                     int(worker.code_write_allowed),
                     int(worker.privacy_allowed),
                     worker.quality_score,
@@ -1536,12 +1621,28 @@ class StateStore:
                     lease_owner_id,
                     lease_generation,
                 )
+            effective_state = state
+            if state is WorkerState.IDLE:
+                active_states = {
+                    str(row["state"])
+                    for row in connection.execute(
+                        "SELECT state FROM worker_runs WHERE worker_id=? "
+                        "AND state IN ('starting','running','waiting')",
+                        (worker_id,),
+                    ).fetchall()
+                }
+                if RunState.RUNNING.value in active_states:
+                    effective_state = WorkerState.RUNNING
+                elif RunState.STARTING.value in active_states:
+                    effective_state = WorkerState.STARTING
+                elif RunState.WAITING.value in active_states:
+                    effective_state = WorkerState.WAITING
             now = timestamp()
             connection.execute(
                 "UPDATE workers SET state=?,resource_state=COALESCE(?,resource_state),"
                 "model_id=COALESCE(?,model_id),last_heartbeat_at=?,updated_at=? WHERE id=?",
                 (
-                    state.value,
+                    effective_state.value,
                     resource_state.value if resource_state else None,
                     model_id,
                     now,
@@ -1556,8 +1657,8 @@ class StateStore:
                 entity_type="worker",
                 entity_id=worker_id,
                 worker_id=worker_id,
-                summary=f"Worker state {worker['state']} -> {state.value}",
-                payload={"from": worker["state"], "to": state.value},
+                summary=f"Worker state {worker['state']} -> {effective_state.value}",
+                payload={"from": worker["state"], "to": effective_state.value},
                 actor=actor,
             )
 
@@ -1613,6 +1714,9 @@ class StateStore:
         lease_owner_id: str | None = None,
         lease_ttl_seconds: float = 30.0,
         max_attempts: int | None = None,
+        expected_manifest_digests: Mapping[str, str | None] | None = None,
+        expected_execution_observation_ids: Mapping[str, str | None] | None = None,
+        expected_authorization_envelope_id: str | None = None,
         actor: str = "runtime",
     ) -> dict[str, Any] | None:
         """Atomically claim a READY Task, its Workers, and durable STARTING executions.
@@ -1631,6 +1735,12 @@ class StateStore:
             raise ValueError("lease_ttl_seconds must be at least one second")
         if max_attempts is not None and max_attempts < 1:
             raise ValueError("max_attempts must be positive")
+        expected_manifests = dict(expected_manifest_digests or {})
+        if expected_manifests and set(expected_manifests) != set(identities):
+            raise ValueError("manifest dispatch fence must cover every selected Worker")
+        expected_execution = dict(expected_execution_observation_ids or {})
+        if expected_execution and set(expected_execution) != set(identities):
+            raise ValueError("execution observation fence must cover every selected Worker")
         with self.transaction() as connection:
             task = connection.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
             if task is None:
@@ -1638,6 +1748,20 @@ class StateStore:
             if task["state"] != TaskState.READY.value or task["version"] != expected_version:
                 return None
             if max_attempts is not None and int(task["attempt_count"]) >= max_attempts:
+                return None
+            autonomous_binding = connection.execute(
+                "SELECT binding.steer_version,goal.state AS goal_state,"
+                "goal.steer_version AS current_steer_version "
+                "FROM autonomous_task_bindings binding "
+                "JOIN autonomous_goals goal ON goal.id=binding.goal_id "
+                "WHERE binding.task_id=?",
+                (task_id,),
+            ).fetchone()
+            if autonomous_binding is not None and (
+                autonomous_binding["goal_state"] != "running"
+                or int(autonomous_binding["steer_version"])
+                != int(autonomous_binding["current_steer_version"])
+            ):
                 return None
             verification_scope_id, task_definition_revision = (
                 self._task_verification_dispatch_snapshot(connection, task)
@@ -1652,17 +1776,215 @@ class StateStore:
             ).fetchone()
             if unsatisfied is not None:
                 return None
+            authorization = None
+            authorization_allowed_providers: set[str] = set()
+            authorization_allowed_worker_classes: set[str] = set()
+            if expected_authorization_envelope_id is not None:
+                authorization = connection.execute(
+                    "SELECT envelope.* FROM authorization_envelopes envelope "
+                    "JOIN authorization_envelope_bindings binding "
+                    "ON binding.envelope_id=envelope.id "
+                    "WHERE envelope.id=? AND binding.task_id=? AND binding.run_id IS NULL "
+                    "AND binding.binding_kind='task'",
+                    (expected_authorization_envelope_id, task_id),
+                ).fetchone()
+                if authorization is None or authorization["project_id"] != task["project_id"]:
+                    return None
+                if authorization["expires_at"] is not None and _aware_timestamp(
+                    str(authorization["expires_at"])
+                ) <= datetime.now(UTC):
+                    return None
+                if authorization["user_approval_state"] not in {"notRequired", "approved"}:
+                    return None
+                if authorization["platform_approval_state"] not in {
+                    "notRequired",
+                    "approved",
+                }:
+                    return None
+                if (
+                    task["permission_class"] == PermissionClass.RED.value
+                    and authorization["permission_ceiling"] != PermissionClass.RED.value
+                ):
+                    return None
+                required_capabilities = set(json.loads(task["required_capabilities_json"]))
+                if not required_capabilities.issubset(
+                    set(json.loads(authorization["capabilities_json"]))
+                ):
+                    return None
+                authorization_allowed_providers = set(
+                    json.loads(authorization["allowed_providers_json"])
+                )
+                authorization_allowed_worker_classes = set(
+                    json.loads(authorization["allowed_worker_classes_json"])
+                )
+                try:
+                    execution_spec = json.loads(task["execution_spec_json"] or "{}")
+                except json.JSONDecodeError:
+                    return None
+                if not isinstance(execution_spec, dict):
+                    return None
+                required_actions = execution_spec.get("authorizationActionClasses", [])
+                required_data_classes = execution_spec.get("authorizationDataClasses", [])
+                if not isinstance(required_actions, list) or not isinstance(
+                    required_data_classes, list
+                ):
+                    return None
+                if any(
+                    not isinstance(value, str)
+                    for value in (*required_actions, *required_data_classes)
+                ):
+                    return None
+                if bool(task["code_write_required"]):
+                    required_actions = [*required_actions, "code.write"]
+                allowed_actions = set(json.loads(authorization["allowed_action_classes_json"]))
+                denied_actions = set(json.loads(authorization["denied_action_classes_json"]))
+                allowed_data = set(json.loads(authorization["allowed_data_classes_json"]))
+                denied_data = set(json.loads(authorization["denied_data_classes_json"]))
+                if not set(required_actions).issubset(allowed_actions) or set(
+                    required_actions
+                ).intersection(denied_actions):
+                    return None
+                if not set(required_data_classes).issubset(allowed_data) or set(
+                    required_data_classes
+                ).intersection(denied_data):
+                    return None
             placeholders = ",".join("?" for _ in identities)
             workers = connection.execute(
                 f"SELECT * FROM workers WHERE id IN ({placeholders}) ORDER BY id", identities
             ).fetchall()
-            if len(workers) != len(identities) or any(
-                worker["state"] != WorkerState.IDLE.value for worker in workers
+            if len(workers) != len(identities):
+                return None
+            if authorization is not None:
+                for worker in workers:
+                    if worker["provider"] not in authorization_allowed_providers:
+                        return None
+                    worker_classes = set(json.loads(worker["worker_classes_json"] or "[]"))
+                    if not worker_classes.intersection(authorization_allowed_worker_classes):
+                        return None
+            manifest_rows = connection.execute(
+                f"SELECT h.worker_id,m.definition_sha256,m.valid_until,m.manifest_json "
+                f"FROM worker_capability_manifest_heads h "
+                f"JOIN worker_capability_manifests m ON m.id=h.manifest_id "
+                f"WHERE h.worker_id IN ({placeholders})",
+                identities,
+            ).fetchall()
+            manifests_by_worker = {str(row["worker_id"]): row for row in manifest_rows}
+            if expected_manifests and any(
+                (
+                    str(manifests_by_worker[worker_id]["definition_sha256"])
+                    if worker_id in manifests_by_worker
+                    else None
+                )
+                != expected_manifests[worker_id]
+                for worker_id in identities
             ):
                 return None
-
+            if expected_execution:
+                execution_rows = connection.execute(
+                    f"SELECT observation.* FROM worker_execution_observations observation "
+                    f"WHERE observation.worker_id IN ({placeholders}) AND observation.version=("
+                    "SELECT MAX(latest.version) FROM worker_execution_observations latest "
+                    "WHERE latest.worker_id=observation.worker_id)",
+                    identities,
+                ).fetchall()
+                execution_by_worker = {str(row["worker_id"]): row for row in execution_rows}
+                for worker_id, expected_observation in expected_execution.items():
+                    if expected_observation is None:
+                        continue
+                    observation = execution_by_worker.get(worker_id)
+                    if observation is None or observation["id"] != expected_observation:
+                        return None
+                    if _aware_timestamp(str(observation["valid_until"])) <= datetime.now(UTC):
+                        return None
+                    if any(
+                        observation[field] != "yes"
+                        for field in (
+                            "discovered",
+                            "configured",
+                            "authenticated",
+                            "authorized",
+                            "reachable",
+                            "runtime_available",
+                            "healthy",
+                            "capacity_available",
+                        )
+                    ):
+                        return None
+                    if observation["platform_approval"] not in {"notRequired", "approved"}:
+                        return None
+            active_counts = {
+                str(row["worker_id"]): int(row["active_count"])
+                for row in connection.execute(
+                    f"SELECT worker_id,COUNT(*) AS active_count FROM worker_runs "
+                    f"WHERE worker_id IN ({placeholders}) "
+                    "AND state IN ('starting','running','waiting') GROUP BY worker_id",
+                    identities,
+                ).fetchall()
+            }
             now_value = datetime.now(UTC)
             now = timestamp(now_value)
+            busy_worker_states = {
+                WorkerState.STARTING.value,
+                WorkerState.RUNNING.value,
+                WorkerState.WAITING.value,
+            }
+            for worker in workers:
+                worker_id = str(worker["id"])
+                active_count = active_counts.get(worker_id, 0)
+                manifest = manifests_by_worker.get(worker_id)
+                if manifest is None:
+                    if active_count != 0 or worker["state"] != WorkerState.IDLE.value:
+                        return None
+                    continue
+                valid_until = manifest["valid_until"]
+                if valid_until is not None:
+                    try:
+                        expiry = _aware_timestamp(str(valid_until))
+                    except ValueError:
+                        return None
+                    if expiry <= now_value:
+                        return None
+                try:
+                    max_concurrency = json.loads(manifest["manifest_json"])["maxConcurrency"]
+                except (KeyError, TypeError, ValueError):
+                    return None
+                if (
+                    isinstance(max_concurrency, bool)
+                    or not isinstance(max_concurrency, int)
+                    or max_concurrency < 1
+                    or active_count >= max_concurrency
+                ):
+                    return None
+                if active_count == 0:
+                    if worker["state"] != WorkerState.IDLE.value:
+                        return None
+                elif worker["state"] not in busy_worker_states:
+                    return None
+            pool_rows = connection.execute(
+                f"SELECT binding.worker_id,pool.id,pool.max_concurrency "
+                f"FROM provider_capacity_pool_workers binding "
+                f"JOIN provider_capacity_pools pool ON pool.id=binding.pool_id "
+                f"WHERE binding.worker_id IN ({placeholders}) AND pool.enabled=1",
+                identities,
+            ).fetchall()
+            selected_by_pool: dict[str, int] = {}
+            pool_limits: dict[str, int] = {}
+            pool_by_worker: dict[str, str] = {}
+            for pool in pool_rows:
+                pool_id = str(pool["id"])
+                pool_by_worker[str(pool["worker_id"])] = pool_id
+                pool_limits[pool_id] = int(pool["max_concurrency"])
+                selected_by_pool[pool_id] = selected_by_pool.get(pool_id, 0) + 1
+            for pool_id, selected_count in selected_by_pool.items():
+                reserved = int(
+                    connection.execute(
+                        "SELECT COUNT(*) AS count FROM provider_capacity_reservations "
+                        "WHERE pool_id=? AND state='reserved'",
+                        (pool_id,),
+                    ).fetchone()["count"]
+                )
+                if reserved + selected_count > pool_limits[pool_id]:
+                    return None
             attempt = int(task["attempt_count"]) + 1
             lease_generation: int | None = None
             if lease_owner_id is not None:
@@ -1673,7 +1995,7 @@ class StateStore:
                 lease_generation = (
                     int(previous_lease["generation"]) + 1 if previous_lease is not None else 1
                 )
-                expires_at = timestamp(now_value + timedelta(seconds=float(lease_ttl_seconds)))
+                expires_at = lease_expiry_timestamp(now_value, lease_ttl_seconds)
                 connection.execute(
                     "INSERT INTO task_execution_leases(task_id,owner_id,generation,state,"
                     "acquired_at,heartbeat_at,expires_at,released_at) "
@@ -1706,13 +2028,24 @@ class StateStore:
             )
             if cursor.rowcount != 1:
                 return None
-            cursor = connection.execute(
-                f"UPDATE workers SET state=?,last_heartbeat_at=?,updated_at=? "
-                f"WHERE id IN ({placeholders}) AND state=?",
-                (WorkerState.STARTING.value, now, now, *identities, WorkerState.IDLE.value),
+            idle_identities = tuple(
+                str(worker["id"]) for worker in workers if worker["state"] == WorkerState.IDLE.value
             )
-            if cursor.rowcount != len(identities):
-                raise RuntimeError("worker reservation concurrent update")
+            if idle_identities:
+                idle_placeholders = ",".join("?" for _ in idle_identities)
+                cursor = connection.execute(
+                    f"UPDATE workers SET state=?,last_heartbeat_at=?,updated_at=? "
+                    f"WHERE id IN ({idle_placeholders}) AND state=?",
+                    (
+                        WorkerState.STARTING.value,
+                        now,
+                        now,
+                        *idle_identities,
+                        WorkerState.IDLE.value,
+                    ),
+                )
+                if cursor.rowcount != len(idle_identities):
+                    raise RuntimeError("worker reservation concurrent update")
 
             self._append_event(
                 connection,
@@ -1772,20 +2105,43 @@ class StateStore:
                         now,
                     ),
                 )
-                self._append_event(
-                    connection,
-                    kind="workerStateChanged",
-                    severity=EventSeverity.NOTICE,
-                    entity_type="worker",
-                    entity_id=worker_id,
-                    project_id=task["project_id"],
-                    task_id=task_id,
-                    worker_id=worker_id,
-                    run_id=run_id,
-                    summary=f"Worker state {workers_by_id[worker_id]['state']} -> starting",
-                    payload={"from": workers_by_id[worker_id]["state"], "to": "starting"},
-                    actor=actor,
-                )
+                if authorization is not None:
+                    connection.execute(
+                        "INSERT INTO authorization_envelope_bindings(id,envelope_id,task_id,run_id,"
+                        "binding_kind,bound_by,created_at) VALUES (?,?,?,?,?,?,?)",
+                        (
+                            f"authorization-binding-{uuid.uuid4()}",
+                            authorization["id"],
+                            task_id,
+                            run_id,
+                            "run",
+                            actor,
+                            now,
+                        ),
+                    )
+                pool_id = pool_by_worker.get(worker_id)
+                if pool_id is not None:
+                    connection.execute(
+                        "INSERT INTO provider_capacity_reservations(run_id,pool_id,task_id,state,"
+                        "reserved_at,released_at,release_reason) VALUES "
+                        "(?,?,?,'reserved',?,NULL,NULL)",
+                        (run_id, pool_id, task_id, now),
+                    )
+                if workers_by_id[worker_id]["state"] == WorkerState.IDLE.value:
+                    self._append_event(
+                        connection,
+                        kind="workerStateChanged",
+                        severity=EventSeverity.NOTICE,
+                        entity_type="worker",
+                        entity_id=worker_id,
+                        project_id=task["project_id"],
+                        task_id=task_id,
+                        worker_id=worker_id,
+                        run_id=run_id,
+                        summary="Worker state idle -> starting",
+                        payload={"from": WorkerState.IDLE.value, "to": "starting"},
+                        actor=actor,
+                    )
                 self._append_event(
                     connection,
                     kind="workerStarted",
@@ -1822,7 +2178,7 @@ class StateStore:
             raise ValueError("ttl_seconds must be at least one second")
         now_value = datetime.now(UTC)
         now = timestamp(now_value)
-        expires_at = timestamp(now_value + timedelta(seconds=float(ttl_seconds)))
+        expires_at = lease_expiry_timestamp(now_value, ttl_seconds)
         with self.transaction() as connection:
             cursor = connection.execute(
                 "UPDATE task_execution_leases SET heartbeat_at=?,expires_at=? "
@@ -1916,10 +2272,52 @@ class StateStore:
             worker = connection.execute(
                 "SELECT state FROM workers WHERE id=?", (run["worker_id"],)
             ).fetchone()
-            if worker is None or worker["state"] != WorkerState.STARTING.value:
+            if worker is None:
+                return False
+            manifest = connection.execute(
+                "SELECT manifest.valid_until,manifest.manifest_json "
+                "FROM worker_capability_manifest_heads head "
+                "JOIN worker_capability_manifests manifest ON manifest.id=head.manifest_id "
+                "WHERE head.worker_id=?",
+                (run["worker_id"],),
+            ).fetchone()
+            allowed_worker_states = {WorkerState.STARTING.value}
+            if manifest is not None:
+                allowed_worker_states.update(
+                    {
+                        WorkerState.RUNNING.value,
+                        WorkerState.WAITING.value,
+                    }
+                )
+                if manifest["valid_until"] is not None:
+                    try:
+                        expiry = _aware_timestamp(str(manifest["valid_until"]))
+                    except ValueError:
+                        return False
+                    if expiry <= datetime.now(UTC):
+                        return False
+                try:
+                    max_concurrency = json.loads(manifest["manifest_json"])["maxConcurrency"]
+                except (KeyError, TypeError, ValueError):
+                    return False
+                active_count = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM worker_runs WHERE worker_id=? "
+                        "AND state IN ('starting','running','waiting')",
+                        (run["worker_id"],),
+                    ).fetchone()[0]
+                )
+                if (
+                    isinstance(max_concurrency, bool)
+                    or not isinstance(max_concurrency, int)
+                    or max_concurrency < 1
+                    or active_count > max_concurrency
+                ):
+                    return False
+            if worker["state"] not in allowed_worker_states:
                 return False
             now = timestamp()
-            connection.execute(
+            run_update = connection.execute(
                 "UPDATE worker_runs SET state=?,started_at=COALESCE(started_at,?),"
                 "last_event_at=?,updated_at=? WHERE id=? AND state=?",
                 (
@@ -1931,7 +2329,9 @@ class StateStore:
                     RunState.STARTING.value,
                 ),
             )
-            connection.execute(
+            if run_update.rowcount != 1:
+                return False
+            worker_update = connection.execute(
                 "UPDATE workers SET state=?,last_heartbeat_at=?,updated_at=? "
                 "WHERE id=? AND state=?",
                 (
@@ -1939,9 +2339,11 @@ class StateStore:
                     now,
                     now,
                     run["worker_id"],
-                    WorkerState.STARTING.value,
+                    worker["state"],
                 ),
             )
+            if worker_update.rowcount != 1:
+                raise RuntimeError("worker activation concurrent update")
             self._append_event(
                 connection,
                 kind="workerRunning",
@@ -1956,20 +2358,21 @@ class StateStore:
                 payload={"from": RunState.STARTING.value, "to": RunState.RUNNING.value},
                 actor=actor,
             )
-            self._append_event(
-                connection,
-                kind="workerStateChanged",
-                severity=EventSeverity.NOTICE,
-                entity_type="worker",
-                entity_id=run["worker_id"],
-                project_id=run["project_id"],
-                task_id=run["task_id"],
-                worker_id=run["worker_id"],
-                run_id=run_id,
-                summary="Worker state starting -> running",
-                payload={"from": WorkerState.STARTING.value, "to": WorkerState.RUNNING.value},
-                actor=actor,
-            )
+            if worker["state"] != WorkerState.RUNNING.value:
+                self._append_event(
+                    connection,
+                    kind="workerStateChanged",
+                    severity=EventSeverity.NOTICE,
+                    entity_type="worker",
+                    entity_id=run["worker_id"],
+                    project_id=run["project_id"],
+                    task_id=run["task_id"],
+                    worker_id=run["worker_id"],
+                    run_id=run_id,
+                    summary=f"Worker state {worker['state']} -> running",
+                    payload={"from": worker["state"], "to": WorkerState.RUNNING.value},
+                    actor=actor,
+                )
         return True
 
     def cancel_task_execution(self, task_id: str, *, actor: str = "runtime") -> bool:
@@ -2014,6 +2417,14 @@ class StateStore:
                 connection.execute(
                     "UPDATE worker_runs SET state=?,ended_at=?,updated_at=? WHERE id=?",
                     (RunState.CANCELLED.value, now, now, run["id"]),
+                )
+                connection.execute(
+                    "UPDATE provider_capacity_reservations SET state='released',released_at=?,"
+                    "release_reason='taskCancelled' WHERE run_id=? AND state='reserved' AND ("
+                    "NOT EXISTS (SELECT 1 FROM provider_jobs job WHERE job.run_id=?) OR "
+                    "EXISTS (SELECT 1 FROM provider_jobs job WHERE job.run_id=? AND "
+                    "(job.launch_state='prepared' OR job.result_collection_state='collected'))) ",
+                    (now, run["id"], run["id"], run["id"]),
                 )
                 connection.execute(
                     "UPDATE provider_jobs SET launch_state="
@@ -2083,9 +2494,95 @@ class StateStore:
         return True
 
     def worker_snapshots(self) -> list[WorkerSnapshot]:
+        with self.connect() as connection:
+            manifest_rows = connection.execute(
+                "SELECT m.*,h.generation AS head_generation "
+                "FROM worker_capability_manifest_heads h "
+                "JOIN worker_capability_manifests m ON m.id=h.manifest_id"
+            ).fetchall()
+            manifests = {str(row["worker_id"]): row for row in manifest_rows}
+            observations = {
+                str(row["worker_id"]): row
+                for row in connection.execute(
+                    "SELECT o.* FROM worker_capability_observations o "
+                    "JOIN worker_capability_manifest_heads h "
+                    "ON h.worker_id=o.worker_id AND h.manifest_id=o.manifest_id "
+                    "WHERE o.version=(SELECT MAX(latest.version) "
+                    "FROM worker_capability_observations latest "
+                    "WHERE latest.worker_id=o.worker_id AND latest.manifest_id=o.manifest_id)"
+                ).fetchall()
+            }
+            execution_observations = {
+                str(row["worker_id"]): row
+                for row in connection.execute(
+                    "SELECT observation.* FROM worker_execution_observations observation "
+                    "WHERE observation.version=(SELECT MAX(latest.version) "
+                    "FROM worker_execution_observations latest "
+                    "WHERE latest.worker_id=observation.worker_id)"
+                ).fetchall()
+            }
+            active_counts = {
+                str(row["worker_id"]): int(row["active_count"])
+                for row in connection.execute(
+                    "SELECT worker_id,COUNT(*) AS active_count FROM worker_runs "
+                    "WHERE state IN ('starting','running','waiting') GROUP BY worker_id"
+                ).fetchall()
+            }
         snapshots: list[WorkerSnapshot] = []
         for row in self.list_workers():
             provider = Provider(row["provider"])
+            manifest = manifests.get(str(row["id"]))
+            observation = observations.get(str(row["id"]))
+            execution_observation = execution_observations.get(str(row["id"]))
+            manifest_value = json.loads(manifest["manifest_json"]) if manifest is not None else {}
+            dynamic_value = json.loads(observation["state_json"]) if observation is not None else {}
+            claims = tuple(
+                CapabilityClaim(
+                    str(item["name"]),
+                    item.get("parameters", {}),
+                )
+                for item in manifest_value.get("capabilities", [])
+            )
+            capabilities = (
+                frozenset(claim.name for claim in claims)
+                if manifest is not None
+                else frozenset(json.loads(row["capabilities_json"]))
+            )
+            execution_disposition = None
+            execution_rejection_code = None
+            execution_reason_codes: tuple[str, ...] = ()
+            if execution_observation is not None:
+                from .fabric.execution_plane import (
+                    EvidenceState,
+                    PlatformApprovalState,
+                    WorkerExecutionObservation,
+                )
+
+                execution_reason_codes = tuple(
+                    str(value) for value in json.loads(execution_observation["reason_codes_json"])
+                )
+                evaluated = WorkerExecutionObservation(
+                    worker_id=str(execution_observation["worker_id"]),
+                    node_id=str(execution_observation["node_id"]),
+                    binding_id=execution_observation["binding_id"],
+                    discovered=EvidenceState(execution_observation["discovered"]),
+                    configured=EvidenceState(execution_observation["configured"]),
+                    authenticated=EvidenceState(execution_observation["authenticated"]),
+                    authorized=EvidenceState(execution_observation["authorized"]),
+                    platform_approval=PlatformApprovalState(
+                        execution_observation["platform_approval"]
+                    ),
+                    reachable=EvidenceState(execution_observation["reachable"]),
+                    runtime_available=EvidenceState(execution_observation["runtime_available"]),
+                    healthy=EvidenceState(execution_observation["healthy"]),
+                    capacity_available=EvidenceState(execution_observation["capacity_available"]),
+                    observed_at=_aware_timestamp(execution_observation["observed_at"]),
+                    valid_until=_aware_timestamp(execution_observation["valid_until"]),
+                    protocol_version=execution_observation["protocol_version"],
+                    reason_codes=execution_reason_codes,
+                ).evaluate()
+                execution_disposition = evaluated.disposition.value
+                execution_rejection_code = evaluated.rejection_code
             snapshots.append(
                 WorkerSnapshot(
                     id=row["id"],
@@ -2102,13 +2599,66 @@ class StateStore:
                     state=WorkerState(row["state"]),
                     node_state=NodeState(row["node_state"]),
                     resource_state=ResourceState(row["resource_state"]),
-                    capabilities=frozenset(json.loads(row["capabilities_json"])),
+                    capabilities=capabilities,
                     code_write_allowed=bool(row["code_write_allowed"]),
                     privacy_allowed=bool(row["privacy_allowed"]),
                     quality_score=row["quality_score"],
                     reliability_score=row["reliability_score"],
                     expected_latency_seconds=row["expected_latency_seconds"],
                     monetary_cost_score=row["monetary_cost_score"],
+                    running_tasks=active_counts.get(str(row["id"]), 0),
+                    manifest_schema_version=(
+                        str(manifest["schema_version"]) if manifest is not None else None
+                    ),
+                    capability_catalog_version=(
+                        str(manifest["catalog_version"]) if manifest is not None else None
+                    ),
+                    manifest_revision=(int(manifest["revision"]) if manifest is not None else None),
+                    manifest_digest=(
+                        str(manifest["definition_sha256"]) if manifest is not None else None
+                    ),
+                    manifest_valid_until=(
+                        _aware_timestamp(str(manifest["valid_until"]))
+                        if manifest is not None and manifest["valid_until"] is not None
+                        else None
+                    ),
+                    cost_mode=CostMode(manifest_value.get("costMode", "unknown")),
+                    subscription_state=SubscriptionState(
+                        dynamic_value.get("subscriptionState", "unknown")
+                    ),
+                    incremental_cost_usd=manifest_value.get("incrementalCostUSD"),
+                    quota_state=QuotaAvailability(dynamic_value.get("quota", "unknown")),
+                    quota_freshness=ObservationFreshness(
+                        dynamic_value.get("quotaFreshness", "unknown")
+                    ),
+                    locality=WorkerLocality(manifest_value.get("locality", "unknown")),
+                    privacy=WorkerPrivacy(manifest_value.get("privacy", "unknown")),
+                    health=WorkerHealth(dynamic_value.get("health", "unknown")),
+                    health_freshness=ObservationFreshness(
+                        dynamic_value.get("healthFreshness", "unknown")
+                    ),
+                    worker_load=dynamic_value.get("load"),
+                    max_concurrency=int(manifest_value.get("maxConcurrency", 1)),
+                    capability_claims=claims,
+                    execution_observation_id=(
+                        str(execution_observation["id"])
+                        if execution_observation is not None
+                        else None
+                    ),
+                    execution_schema_version=(
+                        str(execution_observation["schema_version"])
+                        if execution_observation is not None
+                        else None
+                    ),
+                    execution_disposition=execution_disposition,
+                    execution_rejection_code=execution_rejection_code,
+                    execution_reason_codes=execution_reason_codes,
+                    worker_classes=frozenset(
+                        manifest_value.get(
+                            "workerClasses",
+                            json.loads(row.get("worker_classes_json") or "[]"),
+                        )
+                    ),
                 )
             )
         return snapshots
@@ -2557,6 +3107,15 @@ class StateStore:
                     run_id,
                 ),
             )
+            if target in terminal:
+                connection.execute(
+                    "UPDATE provider_capacity_reservations SET state='released',released_at=?,"
+                    "release_reason=? WHERE run_id=? AND state='reserved' AND ("
+                    "NOT EXISTS (SELECT 1 FROM provider_jobs job WHERE job.run_id=?) OR "
+                    "EXISTS (SELECT 1 FROM provider_jobs job WHERE job.run_id=? AND "
+                    "(job.launch_state='prepared' OR job.result_collection_state='collected'))) ",
+                    (now, f"runTerminal:{target.value}", run_id, run_id, run_id),
+                )
             task = connection.execute(
                 "SELECT project_id FROM tasks WHERE id=?", (row["task_id"],)
             ).fetchone()
@@ -2926,6 +3485,17 @@ class StateStore:
                 "last_reconciled_at=?,updated_at=? WHERE id=?",
                 (state, launch_state, now, now, job["id"]),
             )
+            if state in {
+                "knownCompleted",
+                "knownFailed",
+                "knownCancelled",
+                "providerNotFound",
+            }:
+                connection.execute(
+                    "UPDATE provider_capacity_reservations SET state='released',released_at=?,"
+                    "release_reason=? WHERE run_id=? AND state='reserved'",
+                    (now, f"providerObserved:{state}", run_id),
+                )
             if job["reconciliation_state"] != state:
                 task = connection.execute(
                     "SELECT project_id FROM tasks WHERE id=?", (job["task_id"],)
@@ -3123,6 +3693,11 @@ class StateStore:
                     payload={"from": current.value, "to": target.value},
                     actor=actor,
                 )
+            connection.execute(
+                "UPDATE provider_capacity_reservations SET state='released',released_at=?,"
+                "release_reason=? WHERE run_id=? AND state='reserved'",
+                (now, f"providerFinalized:{target.value}", run_id),
+            )
             # A cancelled run relinquished Worker ownership when cancellation became canonical.
             # Its later provider observation must not overwrite a health/admin state or a new
             # assignment. Non-cancelled finalization may release the Worker only when no peer run
@@ -3255,7 +3830,7 @@ class StateStore:
             raise ValueError("lease_ttl_seconds must be at least one second")
         now_value = datetime.now(UTC)
         now = timestamp(now_value)
-        expires_at = timestamp(now_value + timedelta(seconds=float(lease_ttl_seconds)))
+        expires_at = lease_expiry_timestamp(now_value, lease_ttl_seconds)
         with self.transaction() as connection:
             task = connection.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
             if task is None:
@@ -4017,6 +4592,15 @@ class StateStore:
                     "UPDATE worker_runs SET state='interrupted',ended_at=?,updated_at=?,"
                     "failure_class='infrastructure',failure_detail='supervisor restart' WHERE id=?",
                     (now, now, run["id"]),
+                )
+                connection.execute(
+                    "UPDATE provider_capacity_reservations SET state='released',released_at=?,"
+                    "release_reason='recoveryPreLaunchInterrupted' "
+                    "WHERE run_id=? AND state='reserved' AND ("
+                    "NOT EXISTS (SELECT 1 FROM provider_jobs job WHERE job.run_id=?) OR "
+                    "EXISTS (SELECT 1 FROM provider_jobs job WHERE job.run_id=? "
+                    "AND job.launch_state='prepared'))",
+                    (now, run["id"], run["id"], run["id"]),
                 )
                 self._append_event(
                     connection,

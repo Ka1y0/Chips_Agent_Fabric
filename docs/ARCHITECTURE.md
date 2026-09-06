@@ -1,9 +1,15 @@
 # Architecture
 
-This document describes the compatibility-preserved V0 core and V0.1 universal-fabric foundations.
-It is not a declaration that every V0.1 deployment gate has passed; see
+This document describes the compatibility-preserved V0 core, V0.1 universal-fabric foundations,
+and the implemented V0.3 development slices for capability routing and semantic interaction. It is
+not a declaration that every deployment or real-host gate has passed; see
 [`COMPATIBILITY.md`](COMPATIBILITY.md), [`GOAL_PROGRESS.md`](GOAL_PROGRESS.md), and
 [`BLOCKERS.md`](BLOCKERS.md) for verification status.
+
+The V0.3-dev Phase 2 extension is documented in
+[`MULTI_NODE_EXECUTION_PLANE.md`](MULTI_NODE_EXECUTION_PLANE.md). Transport discovery,
+capability metadata, runtime executability, authorization, platform approval, and provider
+invocation evidence are separate facts; none may be inferred from another.
 
 ## System context
 
@@ -19,6 +25,7 @@ flowchart LR
         runtime["Async runtime"]
         policy["State machine + approvals + verification"]
         scheduler["Deterministic scheduler"]
+        capabilities["Capability catalog<br/>manifest + observation registry"]
         journal[("SQLite WAL<br/>state + append-only events")]
         adapters["Model-independent adapter boundary"]
     end
@@ -27,6 +34,7 @@ flowchart LR
         native["Native subprocess adapters<br/>Codex / Claude / Grok / AGY"]
         remote["Local Worker protocol v1/v2<br/>durable registry + registered drivers"]
         localdrivers["Server-owned driver catalog<br/>Codex / Claude / Grok / AGY / future"]
+        interaction["Semantic interaction adapter<br/>deterministic fixture backend today"]
         mock["Deterministic mock worker"]
     end
 
@@ -38,15 +46,19 @@ flowchart LR
     api --> journal
     runtime --> policy
     runtime --> scheduler
+    capabilities --> scheduler
+    capabilities --> journal
     policy --> journal
     scheduler --> journal
     runtime --> adapters
     adapters --> native
     adapters --> remote
+    adapters --> interaction
     remote --> localdrivers
     adapters --> mock
     native --> adapters
     remote --> adapters
+    interaction --> adapters
     localdrivers --> remote
     mock --> adapters
     adapters --> runtime
@@ -99,12 +111,18 @@ state, approve a RED action, or satisfy a definition of done by itself.
 |---|---|---|
 | Domain and state machine | Stable entities, enums, legal transitions | Provider CLI flags or UI state |
 | Scheduler | Hard constraints, deterministic scoring, explainable routing | Process execution or mutable global state |
+| Hybrid Engine | Explainable bounded workload decomposition and topology | Concrete Worker selection, authority, or dispatch |
+| Cluster DAG expander | Typed roles, dependencies, replicas, spawn-policy bounds, reviewer-independence constraints | Worker scoring, unbounded fanout/recursion, or lease bypass |
+| Capability fabric | Versioned provider-independent vocabulary, immutable Worker manifests, append-only health/quota/load observations | Provider identity, permission grants, or invented availability/cost |
+| Local-model profiler | Evidence-backed observed properties and conservative recommendations | Credential reads, endpoint probes during discovery, invented capacity, or silent setting changes |
 | Runtime | Dispatch, concurrency, cancellation, result orchestration | Credential acquisition or model-specific parsing |
 | Store | Migrations, durable state, event sequence, token hashes | Chat history as state or plaintext bearer tokens |
 | Native adapters | Process groups, streaming capture, provider parsing, redaction | Global scheduling, approval decisions, or unadvertised recovery semantics |
 | Local Worker adapter/daemon | Versioned HTTP boundary, read-only enforcement, v2 durable launch registry, registered server-owned driver profiles, job reconcile/resume/collect | Client-supplied executable/argv/env/cwd, public network exposure, code-writing delegation, or unobserved provider idempotency claims |
 | Node recovery monitor | Due-policy polling, fenced leases, checkpoints, typed runtime-start dispatch | Credentials, arbitrary commands, or implicit grants |
 | Verification | Deterministic acceptance checks and evidence | Subjective model self-attestation |
+| Interaction fabric | Structured semantic plans, resource fencing, observe/act/postverify loop, sanitized trajectories and skill hints | Prompt-derived authority, coordinate-first automation, or claims of an unimplemented OS/browser/VLM backend |
+| Project_Bridge | Optional bounded/hash-aware derived transfer and semantic support accounting | Canonical state, permissions, or mutation from model output |
 | REST/WebSocket API | Read-only projections, replay cursor, scoped observation | Arbitrary shell/filesystem/model access |
 | Cyber Office | Human-readable live observation | Canonical state or task mutation in V0 |
 
@@ -150,6 +168,15 @@ state, approve a RED action, or satisfy a definition of done by itself.
   the exact scope, semantic Task revision, and source attempt it evaluated. A stale result cannot
   satisfy a newer scope/attempt, iteration steering epochs are checked, and scoped verification
   never rewrites project-level criterion templates.
+- Capability manifests keep static ability and billing relationship separate from dynamic health,
+  subscription availability, quota, and load. Immutable revisions use a generation-CAS head;
+  observations are append-only and `UNKNOWN` remains explicit. See
+  [`CAPABILITY_FABRIC.md`](CAPABILITY_FABRIC.md).
+- Semantic interaction executions accept only a bounded structured execution specification, acquire
+  generation-fenced semantic resources, and require a fresh observation after every action before
+  recording success. SQLite persists sanitized semantic state rather than screenshots, typed text,
+  or geometry. This is currently proven with an offline deterministic fixture, not a real UI
+  backend. See [`INTERACTION_FABRIC.md`](INTERACTION_FABRIC.md).
 
 ## Trust and network boundaries
 
@@ -183,7 +210,9 @@ exposure remain outside the supported design.
 ## Extension seams
 
 New workers implement the model-independent adapter contract and retain provider-specific formats
-below that seam. New clients consume `/v1` projections and the event cursor. Future mutation APIs or
+below that seam. Capability identity is independent of provider identity, and an interaction
+channel is an execution medium rather than a Worker. New clients consume `/v1` projections and the
+event cursor. Future mutation APIs or
 MCP surfaces require separate capability scopes, durable approval enforcement, audit events, and an
 ADR before they are considered part of the stable V0 contract.
 

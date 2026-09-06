@@ -161,6 +161,294 @@ def client(api_store: StateStore) -> TestClient:
     return TestClient(app, client=("127.0.0.1", 50000))
 
 
+def seed_fabric_semantic_api(api_store: StateStore, *, private_marker: str) -> None:
+    now = timestamp()
+    digest = "a" * 64
+    with api_store.transaction() as connection:
+        connection.execute(
+            "INSERT INTO autonomous_goals(id,project_id,intent,effective_intent,state,"
+            "budgets_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
+            (
+                "goal-fabric-1",
+                "project-1",
+                "Exercise Fabric projections",
+                "Exercise Fabric projections",
+                "running",
+                "{}",
+                now,
+                now,
+            ),
+        )
+        manifest = {
+            "capabilities": [{"name": "review-code", "parameters": {"apiToken": private_marker}}],
+            "models": ["model-1"],
+            "locality": "remote",
+            "privacy": "internal",
+            "costMode": "subscription",
+            "incrementalCostUSD": 0.0,
+            "maxConcurrency": 2,
+            "prompt": private_marker,
+        }
+        connection.execute(
+            "INSERT INTO worker_capability_manifests(id,worker_id,revision,schema_version,"
+            "catalog_version,provider_id,adapter_kind,definition_sha256,source,observed_at,"
+            "valid_until,manifest_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "manifest-1",
+                "worker-1",
+                1,
+                "worker-capability-manifest/v1",
+                "fabric-capabilities/v1",
+                "anthropic",
+                "claudeCode",
+                f"sha256:{digest}",
+                private_marker,
+                now,
+                None,
+                json.dumps(manifest),
+                now,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO worker_capability_manifest_heads(worker_id,manifest_id,generation,"
+            "updated_at) VALUES (?,?,?,?)",
+            ("worker-1", "manifest-1", 1, now),
+        )
+        connection.execute(
+            "INSERT INTO worker_capability_observations(id,worker_id,manifest_id,version,"
+            "health,active_jobs,subscription_state,quota_state,quota_freshness,state_json,"
+            "observed_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "observation-1",
+                "worker-1",
+                "manifest-1",
+                1,
+                "healthy",
+                1,
+                "available",
+                "scarce",
+                "fresh",
+                json.dumps({"authorizationToken": private_marker}),
+                now,
+                now,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO routing_decisions(id,task_id,topology,policy_version,"
+            "selected_workers_json,explanation_json,created_at) VALUES (?,?,?,?,?,?,?)",
+            (
+                "routing-fabric-1",
+                "task-1",
+                "single",
+                "fabric-routing/v1",
+                '["worker-1"]',
+                json.dumps({"prompt": private_marker}),
+                now,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO routing_candidates(decision_id,worker_id,selected,score,"
+            "components_json,rejection_code,rejection_detail) VALUES (?,?,?,?,?,?,?)",
+            (
+                "routing-fabric-1",
+                "worker-1",
+                1,
+                0.95,
+                json.dumps({"privatePath": private_marker}),
+                "",
+                private_marker,
+            ),
+        )
+        connection.execute(
+            "UPDATE tasks SET execution_spec_json=? WHERE id='task-1'",
+            (json.dumps({"prompt": private_marker, "path": private_marker}),),
+        )
+        connection.execute(
+            "INSERT INTO child_work_proposals(id,goal_id,parent_task_id,source_run_id,"
+            "proposal_key,semantic_digest,source_result_sha256,depth,plan_version,steer_version,"
+            "task_definition_revision,specification_json,created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "proposal-fabric-1",
+                "goal-fabric-1",
+                "task-1",
+                "run-1",
+                "review-follow-up",
+                digest,
+                "b" * 64,
+                2,
+                3,
+                4,
+                5,
+                json.dumps({"prompt": private_marker, "token": private_marker}),
+                now,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO child_work_proposal_decisions(id,proposal_id,revision,outcome,"
+            "policy_version,reason_code,child_task_id,budget_json,created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                "proposal-decision-1",
+                "proposal-fabric-1",
+                1,
+                "deferred",
+                "spawn-policy/v1",
+                "TASK_CONCURRENCY_LIMIT",
+                None,
+                json.dumps({"secret": private_marker}),
+                now,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO result_fusion_decisions(id,task_id,source_attempt,policy_version,"
+            "input_set_sha256,classification,fused_json,conflicts_json,provenance_json,"
+            "confidence,verification_required,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "fusion-1",
+                "task-1",
+                2,
+                "deterministic-fusion/v1",
+                "c" * 64,
+                "compatible",
+                json.dumps({"prompt": private_marker}),
+                json.dumps({"value": private_marker}),
+                json.dumps({"path": private_marker}),
+                0.75,
+                1,
+                now,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO fusion_verification_handoffs(id,fusion_id,verification_scope_id,"
+            "task_definition_revision,source_attempt,steer_version,token_sha256,created_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            ("handoff-1", "fusion-1", None, 5, 2, 4, "d" * 64, now),
+        )
+        connection.execute(
+            "INSERT INTO interaction_resources(resource_key,resource_type,scope_id,created_at,"
+            "updated_at) VALUES (?,?,?,?,?)",
+            ("browser.context-1", "browserContext", "scope-1", now, now),
+        )
+        connection.execute(
+            "INSERT INTO interaction_resource_leases(lease_id,resource_key,lease_group_id,"
+            "owner_id,task_id,run_id,generation,state,acquired_at,heartbeat_at,expires_at,"
+            "released_at) VALUES (?,?,?,?,?,?,?,'active',?,?,?,NULL)",
+            (
+                "lease-1",
+                "browser.context-1",
+                "lease-group-1",
+                f"owner-{private_marker}",
+                "task-1",
+                "run-1",
+                1,
+                now,
+                now,
+                "2999-01-01T00:00:00Z",
+            ),
+        )
+        connection.execute(
+            "INSERT INTO interaction_executions(id,project_id,task_id,run_id,worker_id,"
+            "adapter_kind,channel,app_id,app_version,plan_schema,plan_sha256,state,"
+            "observation_count,grounding_count,started_at,updated_at,finished_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "interaction-1",
+                "project-1",
+                "task-1",
+                "run-1",
+                "worker-1",
+                "native",
+                "accessibility",
+                "com.example.app",
+                "1.2.3",
+                "ui-plan/v1",
+                "e" * 64,
+                "succeeded",
+                2,
+                1,
+                now,
+                now,
+                now,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO ui_snapshots(id,execution_id,previous_snapshot_id,ordinal,app_id,"
+            "window_id,source,state_sha256,safe_tree_json,focus_element_id,observed_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "snapshot-1",
+                "interaction-1",
+                None,
+                0,
+                "com.example.app",
+                "window-1",
+                "accessibility",
+                "f" * 64,
+                json.dumps({"name": private_marker, "value": private_marker}),
+                private_marker,
+                now,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO interaction_trajectories(id,execution_id,schema_version,verified,"
+            "trajectory_json,created_at) VALUES (?,?,?,?,?,?)",
+            (
+                "trajectory-1",
+                "interaction-1",
+                "interaction-trajectory/v1",
+                1,
+                json.dumps({"typedValue": private_marker}),
+                now,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO semantic_skills(id,app_id,semantic_action,app_version_constraint,"
+            "lifecycle,revision,template_json,success_count,failure_count,confidence,"
+            "source_trajectory_id,last_verified_at,created_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "skill-1",
+                "com.example.app",
+                "document.review",
+                "1.2.3",
+                "active",
+                1,
+                json.dumps({"locator": private_marker, "typedValue": private_marker}),
+                2,
+                0,
+                0.9,
+                "trajectory-1",
+                now,
+                now,
+                now,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO semantic_skill_evidence(skill_id,trajectory_id,outcome,verified,"
+            "app_version,observed_at) VALUES (?,?,?,?,?,?)",
+            ("skill-1", "trajectory-1", "success", 1, "1.2.3", now),
+        )
+        connection.execute(
+            "INSERT INTO ui_graph_edges(app_id,app_version,from_state_sha256,semantic_action,"
+            "to_state_sha256,success_count,failure_count,last_verified_at,confidence,created_at,"
+            "updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "com.example.app",
+                "1.2.3",
+                "1" * 64,
+                "document.review",
+                "2" * 64,
+                3,
+                1,
+                now,
+                0.8,
+                now,
+                now,
+            ),
+        )
+
+
 def test_rest_envelopes_match_cyber_office_contract(client: TestClient) -> None:
     for path in (
         "/v1/status",
@@ -202,6 +490,258 @@ def test_agent_native_discovery_is_machine_readable(client: TestClient) -> None:
     schemas = client.get("/v1/schemas").json()["data"]
     assert schemas["openAPI"] == "/openapi.json"
     assert schemas["streamFrames"] == ["snapshot", "events", "keepalive"]
+
+
+def test_fabric_read_routes_are_semantic_allowlists(
+    api_store: StateStore,
+    client: TestClient,
+) -> None:
+    marker = "private-fabric-marker-987654"
+    seed_fabric_semantic_api(api_store, private_marker=marker)
+
+    responses = {
+        "capabilities": client.get("/v1/fabric/capabilities"),
+        "routing": client.get("/v1/fabric/routing", params={"taskID": "task-1"}),
+        "spawn": client.get("/v1/fabric/spawn-proposals", params={"goalID": "goal-fabric-1"}),
+        "fusion": client.get("/v1/fabric/fusions", params={"taskID": "task-1"}),
+        "interactions": client.get(
+            "/v1/interactions", params={"taskID": "task-1", "state": "succeeded"}
+        ),
+        "resources": client.get(
+            "/v1/interaction-resources",
+            params={"resourceType": "browserContext", "activeOnly": True},
+        ),
+        "skills": client.get(
+            "/v1/skills", params={"appID": "com.example.app", "lifecycle": "active"}
+        ),
+        "graph": client.get("/v1/ui-graph", params={"appID": "com.example.app"}),
+    }
+    assert all(response.status_code == 200 for response in responses.values())
+    serialized = json.dumps(
+        {name: response.json() for name, response in responses.items()}, sort_keys=True
+    )
+    assert marker not in serialized
+
+    capability_data = responses["capabilities"].json()["data"]
+    assert capability_data["protocolVersion"] == "fabric-v0.3-dev"
+    worker = capability_data["workers"][0]
+    assert set(worker) == {"workerID", "nodeID", "manifest", "observation"}
+    assert set(worker["manifest"]) == {
+        "id",
+        "revision",
+        "schemaVersion",
+        "catalogVersion",
+        "providerID",
+        "adapterKind",
+        "definitionSHA256",
+        "capabilityNames",
+        "models",
+        "locality",
+        "privacy",
+        "costMode",
+        "incrementalCostUSD",
+        "maxConcurrency",
+        "observedAt",
+        "validUntil",
+        "headGeneration",
+        "headUpdatedAt",
+    }
+    assert worker["manifest"]["capabilityNames"] == ["review-code"]
+    assert worker["manifest"]["models"] == ["model-1"]
+    assert set(worker["observation"]) == {
+        "id",
+        "version",
+        "health",
+        "activeJobs",
+        "subscriptionState",
+        "quotaState",
+        "quotaFreshness",
+        "observedAt",
+    }
+
+    routing = responses["routing"].json()["data"][0]
+    assert set(routing) == {
+        "id",
+        "taskID",
+        "topology",
+        "policyVersion",
+        "selectedWorkerIDs",
+        "candidates",
+        "createdAt",
+    }
+    assert routing["selectedWorkerIDs"] == ["worker-1"]
+    assert set(routing["candidates"][0]) == {
+        "workerID",
+        "selected",
+        "score",
+        "rejectionCode",
+    }
+
+    spawn = responses["spawn"].json()["data"][0]
+    assert set(spawn) == {
+        "id",
+        "goalID",
+        "parentTaskID",
+        "sourceRunID",
+        "proposalKey",
+        "semanticDigest",
+        "sourceResultSHA256",
+        "depth",
+        "planVersion",
+        "steerVersion",
+        "taskDefinitionRevision",
+        "createdAt",
+        "latestDecision",
+    }
+    assert set(spawn["latestDecision"]) == {
+        "id",
+        "revision",
+        "outcome",
+        "policyVersion",
+        "reasonCode",
+        "childTaskID",
+        "createdAt",
+    }
+
+    fusion = responses["fusion"].json()["data"][0]
+    assert set(fusion) == {
+        "id",
+        "taskID",
+        "sourceAttempt",
+        "policyVersion",
+        "inputSetSHA256",
+        "classification",
+        "confidence",
+        "verificationRequired",
+        "createdAt",
+        "verificationHandoffs",
+    }
+    assert set(fusion["verificationHandoffs"][0]) == {
+        "id",
+        "verificationScopeID",
+        "taskDefinitionRevision",
+        "sourceAttempt",
+        "steerVersion",
+        "createdAt",
+    }
+
+    interaction = responses["interactions"].json()["data"][0]
+    assert set(interaction) == {
+        "id",
+        "projectID",
+        "taskID",
+        "runID",
+        "workerID",
+        "adapterKind",
+        "channel",
+        "appID",
+        "appVersion",
+        "planSHA256",
+        "state",
+        "observationCount",
+        "groundingCount",
+        "startedAt",
+        "updatedAt",
+        "finishedAt",
+        "trajectory",
+    }
+    assert set(interaction["trajectory"]) == {"id", "verified", "createdAt"}
+
+    resource = responses["resources"].json()["data"][0]
+    assert set(resource) == {
+        "resourceKey",
+        "resourceType",
+        "scopeID",
+        "createdAt",
+        "updatedAt",
+        "activeLease",
+    }
+    assert set(resource["activeLease"]) == {
+        "leaseID",
+        "leaseGroupID",
+        "taskID",
+        "runID",
+        "generation",
+        "state",
+        "acquiredAt",
+        "heartbeatAt",
+        "expiresAt",
+    }
+
+    skill = responses["skills"].json()["data"][0]
+    assert set(skill) == {
+        "id",
+        "appID",
+        "semanticAction",
+        "appVersionConstraint",
+        "lifecycle",
+        "revision",
+        "successCount",
+        "failureCount",
+        "confidence",
+        "sourceTrajectoryID",
+        "evidenceCount",
+        "verifiedEvidenceCount",
+        "lastVerifiedAt",
+        "createdAt",
+        "updatedAt",
+    }
+    graph = responses["graph"].json()["data"][0]
+    assert set(graph) == {
+        "appID",
+        "appVersion",
+        "fromStateSHA256",
+        "semanticAction",
+        "toStateSHA256",
+        "successCount",
+        "failureCount",
+        "lastVerifiedAt",
+        "confidence",
+        "createdAt",
+        "updatedAt",
+    }
+
+
+def test_fabric_capability_projection_does_not_mix_manifest_generations(
+    api_store: StateStore,
+    client: TestClient,
+) -> None:
+    seed_fabric_semantic_api(api_store, private_marker="private-generation-marker")
+    now = timestamp()
+    with api_store.transaction() as connection:
+        connection.execute(
+            "INSERT INTO worker_capability_manifests(id,worker_id,revision,schema_version,"
+            "catalog_version,provider_id,adapter_kind,definition_sha256,source,observed_at,"
+            "valid_until,manifest_json,created_at) SELECT ?,worker_id,2,schema_version,"
+            "catalog_version,provider_id,adapter_kind,?,source,?,valid_until,manifest_json,? "
+            "FROM worker_capability_manifests WHERE id=?",
+            ("manifest-2", f"sha256:{'b' * 64}", now, now, "manifest-1"),
+        )
+        connection.execute(
+            "UPDATE worker_capability_manifest_heads SET manifest_id=?,generation=2,updated_at=? "
+            "WHERE worker_id=?",
+            ("manifest-2", now, "worker-1"),
+        )
+
+    worker = client.get("/v1/fabric/capabilities").json()["data"]["workers"][0]
+    assert worker["manifest"]["id"] == "manifest-2"
+    assert worker["observation"] is None
+
+
+@pytest.mark.parametrize(
+    ("path", "parameters"),
+    (
+        ("/v1/interactions", {"state": "unknown"}),
+        ("/v1/interaction-resources", {"resourceType": "screenCoordinates"}),
+        ("/v1/skills", {"lifecycle": "unverified"}),
+    ),
+)
+def test_fabric_read_route_filters_fail_closed(
+    client: TestClient,
+    path: str,
+    parameters: dict[str, str],
+) -> None:
+    assert client.get(path, params=parameters).status_code == 400
 
 
 def test_unknown_node_telemetry_is_never_fabricated_as_zero(client: TestClient) -> None:
@@ -814,6 +1354,76 @@ def test_semantic_orchestration_event_kind_is_preserved(
 @pytest.mark.parametrize(
     "kind",
     (
+        "workerCapabilityManifestRecorded",
+        "workerCapabilityObservationRecorded",
+        "capabilityRegistered",
+        "capabilityUpdated",
+        "capabilityDynamicStateUpdated",
+        "nodeExecutionRecoveryLeaseAcquired",
+        "nodeRecoveryStarted",
+        "nodeRecoveryAccepted",
+        "nodeRecoveryRejected",
+        "nodeRecoveryFailed",
+        "nodeRecoveryOutcomeUnknown",
+        "nodeRecovered",
+        "providerProcessStarted",
+        "providerInferenceStarted",
+        "providerInferenceCompleted",
+        "providerInvocationRejected",
+        "childWorkProposed",
+        "childWorkProposalDecided",
+        "subagentRootBound",
+        "subagentProposed",
+        "subagentAccepted",
+        "subagentRejected",
+        "resultFusionRecorded",
+        "fusionVerificationHandoffCreated",
+        "fusionStarted",
+        "fusionConflictDetected",
+        "fusionCompleted",
+        "uiResourceRegistered",
+        "uiResourceAcquired",
+        "uiResourceReleased",
+        "uiExecutionStarted",
+        "uiObserved",
+        "uiActionVerified",
+        "uiActionFailed",
+        "trajectoryCompleted",
+        "skillCandidateCreated",
+        "skillValidated",
+        "skillActivated",
+        "skillInvalidated",
+        "uiGraphTransitionRecorded",
+    ),
+)
+def test_fabric_event_kinds_are_preserved(
+    api_store: StateStore,
+    client: TestClient,
+    kind: str,
+) -> None:
+    with api_store.transaction() as connection:
+        api_store._append_event(
+            connection,
+            kind=kind,
+            severity=EventSeverity.INFO,
+            entity_type="task",
+            entity_id="task-1",
+            project_id="project-1",
+            task_id="task-1",
+            summary="Fabric semantic lifecycle event",
+            payload={"state": "observed"},
+            actor="fabric",
+        )
+
+    events = client.get("/v1/events", params={"kind": kind, "task": "task-1"}).json()["data"]
+
+    assert len(events) == 1
+    assert events[0]["kind"] == kind
+
+
+@pytest.mark.parametrize(
+    "kind",
+    (
         "providerJobPrepared",
         "providerJobLaunchStarted",
         "providerJobHandleBound",
@@ -857,6 +1467,16 @@ def test_remote_configuration_requires_scoped_bearer(api_store: StateStore) -> N
     )
     client = TestClient(app, client=("10.20.30.40", 50000))
     assert client.get("/v1/status").status_code == 401
+    fabric_paths = (
+        "/v1/fabric/capabilities",
+        "/v1/fabric/execution-plane",
+        "/v1/fabric/authorizations",
+        "/v1/fabric/data-provenance",
+        "/v1/fabric/provider-invocations",
+        "/v1/fabric/hypotheses",
+        "/v1/fabric/write-authorities",
+    )
+    assert all(client.get(path).status_code == 401 for path in fabric_paths)
 
     _, wrong = api_store.issue_api_token(label="wrong", scopes={"tasks:write"})
     assert client.get("/v1/status", headers={"Authorization": f"Bearer {wrong}"}).status_code == 403
@@ -864,6 +1484,10 @@ def test_remote_configuration_requires_scoped_bearer(api_store: StateStore) -> N
     _, observe = api_store.issue_api_token(label="monitor", scopes={"observe:read"})
     response = client.get("/v1/status", headers={"Authorization": f"Bearer {observe}"})
     assert response.status_code == 200
+    assert all(
+        client.get(path, headers={"Authorization": f"Bearer {observe}"}).status_code == 200
+        for path in fabric_paths
+    )
 
 
 def test_websocket_snapshot_replay_and_keepalive(api_store: StateStore) -> None:
