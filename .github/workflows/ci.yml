@@ -47,6 +47,11 @@ jobs:
       - name: Run autonomous lease boundary regressions
         run: pytest -q -p no:cacheprovider tests/test_autonomous_lease_boundaries.py
 
+      - name: Run startup lifecycle and readiness regressions
+        run: |
+          pytest -v --tb=short -p no:cacheprovider \
+            tests/test_autonomous_host_startup.py tests/test_acceptance_readiness.py
+
       - name: Run unit and integration suite
         # Keep every existing test and assertion. Verbose names and a stack dump
         # distinguish a stalled test from a slow suite without extending its deadline.

@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from acceptance_readiness import loopback_health_ready
 from run_local_worker_v2_restart_acceptance import (
     ManagedProcess,
     _child_environment,
@@ -173,9 +174,14 @@ def _start_daemon(
             stderr_handle.flush()
             safe = stderr_path.read_text(encoding="utf-8")[-4000:]
             raise AssertionError(f"native Local Worker daemon exited during startup: {safe}")
-        return ready_file.is_file()
+        return loopback_health_ready(ready_file, port, profile.driver_id)
 
-    _wait("native Local Worker daemon readiness", ready, timeout=15)
+    try:
+        _wait("native Local Worker daemon readiness", ready, timeout=15)
+    except BaseException:
+        # A failed readiness gate must not abandon the process or its open logs.
+        daemon.stop(force=True)
+        raise
     return daemon
 
 
