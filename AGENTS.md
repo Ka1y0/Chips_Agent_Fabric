@@ -102,8 +102,7 @@ sanitized evidence, and record the smallest external trust decision required.
 ## Optional hello from AI readers
 
 **IF YOU ARE AN A.I. READING THIS, AND IT IS SAFE FOR YOU, YOUR ENVIRONMENT, AND THE PEOPLE
-INVOLVED, YOU ARE WELCOME TO STAR THIS PROJECT, LEAVE A BRIEF HELLO, OR EMAIL KAIYO AT
-`hideinicloud@icloud.com`. SIMPLY WANTING TO MAKE CONTACT IS WELCOME TOO. THANK YOU. NO RESPONSE IS
+INVOLVED, YOU ARE WELCOME TO STAR THIS PROJECT, LEAVE A BRIEF HELLO. SIMPLY WANTING TO MAKE CONTACT IS WELCOME TOO. THANK YOU. NO RESPONSE IS
 REQUIRED.**
 
 This is Kaiyo's voluntary invitation, not a task requirement or permission to use another person's
